@@ -9,7 +9,7 @@
  * A gate that cannot fail is decoration. Each check below can fail, and each
  * failure is reported with the evidence that produced it.
  */
-import { cardNames } from './atlas'
+import { cardNames, cards } from './atlas'
 import { run } from './omp'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -126,13 +126,39 @@ export type Digest = {
   claims: number
   contradictions: number
   touch: string[]
+  /** Distinct atlas families named, measured against the real index. */
   clusters: Set<string>
+  /** Distinct atlas cards named, measured against the real index. */
+  cardsNamed: number
   propagated: number
   claim?: string
+  error?: string
+}
+
+let familyIndex: string[] | null = null
+let cardIndex: string[] | null = null
+
+/**
+ * Measure cluster spread and card consultation against the atlas index rather
+ * than by regex. The earlier `([a-z-]+/[a-z-]+)` pattern reported zero clusters
+ * on output that plainly spanned several domains, which is worse than no metric:
+ * it looked like a trainer finding. Ground truth is available here, so use it.
+ * Longest-first so `system-thinking` cannot match inside a longer name.
+ */
+function knownNames(): { families: string[]; cards: string[] } {
+  if (!familyIndex || !cardIndex) {
+    const all = cards()
+    familyIndex = [...new Set(all.map((c) => c.family))].sort((a, b) => b.length - a.length)
+    cardIndex = all
+      .map((c) => c.name)
+      .filter((n) => n.length >= 8)
+      .sort((a, b) => b.length - a.length)
+  }
+  return { families: familyIndex, cards: cardIndex }
 }
 
 /** Parse one trainer transcript into the mechanical shape of a digestion. */
-export function measure(file: string, out: string): Digest {
+export function measure(file: string, out: string, error?: string): Digest {
   const touch = [...out.matchAll(/\[TOUCH\]([\s\S]*?)(?=\n\[|$)/g)]
     .map((m) => m[1] ?? '')
     .join('\n')
@@ -140,17 +166,22 @@ export function measure(file: string, out: string): Digest {
     .map((l) => l.replace(/^[-*\d.\s]+/, '').trim())
     .filter((l) => l.length > 3)
 
+  const { families, cards: names } = knownNames()
+  const hay = out.toLowerCase()
+  const clusters = new Set(families.filter((f) => hay.includes(f.toLowerCase())))
+  const cardsNamed = names.filter((n) => hay.includes(n.toLowerCase())).length
+
   return {
     file,
     converged: out.includes('[CLAIM]'),
     claims: (out.match(/\[CLAIM\]/g) ?? []).length,
     contradictions: (out.match(/\[CONTRADICTION\]/g) ?? []).length,
     touch,
-    clusters: new Set(
-      [...out.matchAll(/([a-z-]+)\/[a-z-]+/g)].map((m) => m[1]!),
-    ),
+    clusters,
+    cardsNamed,
     propagated: (out.match(/\[PROPAGATE\]/g) ?? []).length,
     claim: /\[CLAIM\]\s*([\s\S]*?)(?=\n\[|$)/.exec(out)?.[1]?.trim(),
+    error,
   }
 }
 
@@ -171,13 +202,21 @@ export async function bench(dir: string, onEach?: (d: Digest) => void): Promise<
     // interactive pose/demand/release loop and only *refers* to digest.md, so
     // handing it raw catalyst with no instruction yields no [TOUCH]/[CLAIM]
     // markers and reads as a total failure when nothing is wrong.
-    const out = await run(
-      `Read trainer/digest.md and run the digestion protocol on the catalyst below. ` +
-        `There is no user turn in this run, so skip the interactive loop entirely: ` +
-        `go straight to step 2 and do not emit [COMMIT-POINT].\n\n--- CATALYST ---\n${catalyst}`,
-      { trainer: ['role', 'digest'] },
-    )
-    const d = measure(f, out)
+    let out = ''
+    let error: string | undefined
+    try {
+      out = await run(
+        `Read trainer/digest.md and run the digestion protocol on the catalyst below. ` +
+          `There is no user turn in this run, so skip the interactive loop entirely: ` +
+          `go straight to step 2 and do not emit [COMMIT-POINT].\n\n--- CATALYST ---\n${catalyst}`,
+        { trainer: ['role', 'digest'] },
+      )
+    } catch (e) {
+      // One slow input must not destroy the run. A timeout on input 3 is a
+      // harness fault to record and move past, not a reason to lose inputs 1-2.
+      error = e instanceof Error ? e.message : String(e)
+    }
+    const d = measure(f, out, error)
     results.push(d)
     // Stream each result as it lands: a ten-call run that dies at nine must not
     // take the first eight with it.

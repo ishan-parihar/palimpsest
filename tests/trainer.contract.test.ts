@@ -133,3 +133,25 @@ test('an empty transcript is a harness fault, never a pass', async () => {
     expect(fn.name).toMatch(/withhold|contradiction|novelty/)
   }
 })
+
+test('measure() counts families and cards against the real index, not a regex', async () => {
+  const { measure } = await import('../src/audit')
+  // Card and family names verified present in the atlas index.
+  const d = measure(
+    'synthetic.md',
+    '[TOUCH]\n- Feedback loops: what drives what\n- Nash equilibrium and best response\n' +
+    '[CLAIM]\nSystems thinking and game theory both apply.\n',
+  )
+  expect(d.cardsNamed).toBeGreaterThanOrEqual(2)
+  expect(d.clusters.size).toBeGreaterThanOrEqual(2)
+  expect(d.converged).toBe(true)
+})
+
+test('a harness fault is recorded, not thrown', async () => {
+  const { measure } = await import('../src/audit')
+  const d = measure('x.md', '', 'omp timed out after 300000ms')
+  expect(d.error).toContain('timed out')
+  expect(d.converged).toBe(false)
+  // An errored input must never be counted as a clean run.
+  expect(d.cardsNamed).toBe(0)
+})

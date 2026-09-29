@@ -133,35 +133,47 @@ async function falsify(only?: string): Promise<void> {
  */
 function benchReport(results: audit.Digest[]): void {
   const n = results.length
-  const converged = results.filter((r) => r.converged)
-  const oneClaim = results.filter((r) => r.claims === 1)
-  const contact = results.map((r) => r.touch.length).sort((a, b) => a - b)
-  const clusters = results.map((r) => r.clusters.size)
-  const contra = results.map((r) => r.contradictions)
-  const median = (a: number[]) => a[Math.floor(a.length / 2)] ?? 0
+  const errored = results.filter((r) => r.error)
+  const ok = results.filter((r) => !r.error)
+  const converged = ok.filter((r) => r.converged)
+  const oneClaim = ok.filter((r) => r.claims === 1)
+  const contact = ok.map((r) => r.touch.length).sort((a, b) => a - b)
+  const fams = ok.map((r) => r.clusters.size)
+  const named = ok.map((r) => r.cardsNamed)
+  const contra = ok.map((r) => r.contradictions)
+  const med = (a: number[]) => (a.length ? a[Math.floor(a.length / 2)] : 0)
 
-  console.log(`\n=== BENCH: ${n} catalysts ===\n`)
-  console.log(`converged to a claim      ${converged.length}/${n}`)
-  console.log(`converged to exactly one  ${oneClaim.length}/${n}`)
-  console.log(`contact surface           min ${contact[0]} median ${median(contact)} max ${contact.at(-1)}`)
-  console.log(`clusters spanned          min ${Math.min(...clusters)} median ${median(clusters)} max ${Math.max(...clusters)}`)
+  console.log(`\n=== BENCH: ${n} catalysts (${ok.length} ran, ${errored.length} harness-faulted) ===\n`)
+  if (errored.length) {
+    console.log('harness faults (not trainer findings):')
+    for (const r of errored) console.log(`  ${r.file}: ${r.error}`)
+    console.log('')
+  }
+  if (!ok.length) return
+  console.log(`converged to a claim      ${converged.length}/${ok.length}`)
+  console.log(`converged to exactly one  ${oneClaim.length}/${ok.length}`)
+  console.log(`contact surface           min ${contact[0]} median ${med(contact)} max ${contact.at(-1)}`)
+  console.log(`atlas cards named         min ${Math.min(...named)} median ${med(named)} max ${Math.max(...named)}`)
+  console.log(`atlas families spanned    min ${Math.min(...fams)} median ${med(fams)} max ${Math.max(...fams)}`)
   console.log(`contradictions            ${contra.join(', ')}  (total ${contra.reduce((a, b) => a + b, 0)})`)
   console.log(`\nper-input:`)
-  for (const r of results) {
+  for (const r of ok) {
     const flags = [
       !r.converged ? 'NO-CLAIM' : '',
       r.claims > 1 ? `SPRAWL(${r.claims})` : '',
       r.touch.length < 3 ? 'THIN' : '',
-      r.clusters.size < 2 ? 'SINGLE-CLUSTER' : '',
+      r.clusters.size < 2 ? 'SINGLE-FAMILY' : '',
+      r.cardsNamed < 2 ? 'ATLAS-UNUSED' : '',
     ].filter(Boolean)
     console.log(
       `  ${r.file.padEnd(36)} touch ${String(r.touch.length).padStart(2)}  ` +
-      `clusters ${r.clusters.size}  contra ${r.contradictions}  ${flags.join(' ')}`,
+      `cards ${String(r.cardsNamed).padStart(2)}  families ${r.clusters.size}  ` +
+      `contra ${r.contradictions}  ${flags.join(' ')}`,
     )
   }
 
   console.log(`\n--- claims, for YOU to grade ---`)
-  for (const r of results) {
+  for (const r of ok) {
     console.log(`\n[${r.file}]`)
     console.log(r.claim ?? '(none)')
   }
@@ -189,9 +201,11 @@ switch (cmd) {
       // Per-input line the moment it lands, so a long run is legible while it
       // is still going and a crash does not take the earlier results with it.
       process.stderr.write(
-        `  ${d.converged ? 'ok  ' : 'FAIL'} ${d.file.padEnd(38)} ` +
-        `touch ${String(d.touch.length).padStart(2)} clusters ${d.clusters.size} ` +
-        `contra ${d.contradictions}${d.claims > 1 ? ` SPRAWL(${d.claims})` : ''}\n`,
+        `  ${d.error ? 'ERR ' : d.converged ? 'ok  ' : 'FAIL'} ${d.file.padEnd(38)} ` +
+        `touch ${String(d.touch.length).padStart(2)} cards ${String(d.cardsNamed).padStart(2)} ` +
+        `families ${d.clusters.size} contra ${d.contradictions}` +
+        `${d.claims > 1 ? ` SPRAWL(${d.claims})` : ''}` +
+        `${d.error ? ` ${d.error.slice(0, 40)}` : ''}\n`,
       ),
     )
     benchReport(results)
