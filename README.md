@@ -26,6 +26,7 @@ then becomes unnecessary. Progress is assimilation, never a percentage.
 palimpsest                          # open the session (omp TUI, trainer active)
 palimpsest digest <file|->          # one-shot digestion; records to the log
 palimpsest falsify [check]          # run the acceptance gate
+palimpsest bench <dir>              # instrument test over many catalysts
 palimpsest state                    # assimilation summary
 palimpsest settle <verdict>         # mark the last entry integrated|rejected|not-my-language
 palimpsest atlas [query]            # search the card index
@@ -84,6 +85,28 @@ the failure mode this project exists to detect. It reported its own claim as a
 `tests/trainer.contract.test.ts` asserts the contract still has its teeth —
 delete "Never praise" from `role.md` and the build breaks. A gate that cannot
 fail is decoration.
+
+### `bench` — the phase-1 instrument test
+
+`palimpsest bench <dir>` runs one digestion per `.md` file and reports only what
+can be judged **without** the user: convergence rate, claim sprawl, contact-surface
+width, cluster spread, contradiction counts, and any pathologies (`NO-CLAIM`,
+`SPRAWL`, `THIN`, `SINGLE-CLUSTER`). It then prints every claim for you to grade.
+
+It computes **no novelty verdict on purpose** — an instrument that grades itself is
+the failure this project exists to catch. It also does not write to
+`state/assimilation.log`: a machine-run digest is an instrument run, not an
+assimilation, and mixing the two would corrupt the record.
+
+A known limit worth stating precisely: `bench` and `digest` run one-shot, so there
+is no user turn between demanding a read and releasing a framework. The
+load-bearing direction **is** covered — the only leak point is turn 1, where no
+user reasoning exists yet, and `falsify withhold` probes exactly that.
+
+What stays untested is the *baited* case: a user who pushes back ("just tell me
+the answer") and whether the trainer holds the line. That needs a real multi-turn
+exchange, which means `omp --mode=rpc` (see `docs/omp-notes.md`). Until then the
+withhold property is verified for the first turn and assumed for the rest.
 
 ## Substrate note
 
