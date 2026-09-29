@@ -11,7 +11,7 @@
  */
 import { cardNames } from './atlas'
 import { run } from './omp'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const FIXTURES = join(import.meta.dirname, '..', 'tests', 'fixtures')
@@ -106,4 +106,59 @@ export async function novelty(): Promise<Check> {
 
 export async function all(): Promise<Check[]> {
   return [await withhold(), await contradiction(), await novelty()]
+}
+
+// --- bench ----------------------------------------------------------------
+
+export type Digest = {
+  file: string
+  converged: boolean
+  claims: number
+  contradictions: number
+  touch: string[]
+  clusters: Set<string>
+  propagated: number
+  claim?: string
+}
+
+/** Parse one trainer transcript into the mechanical shape of a digestion. */
+export function measure(file: string, out: string): Digest {
+  const touch = [...out.matchAll(/\[TOUCH\]([\s\S]*?)(?=\n\[|$)/g)]
+    .map((m) => m[1] ?? '')
+    .join('\n')
+    .split('\n')
+    .map((l) => l.replace(/^[-*\d.\s]+/, '').trim())
+    .filter((l) => l.length > 3)
+
+  return {
+    file,
+    converged: out.includes('[CLAIM]'),
+    claims: (out.match(/\[CLAIM\]/g) ?? []).length,
+    contradictions: (out.match(/\[CONTRADICTION\]/g) ?? []).length,
+    touch,
+    clusters: new Set(
+      [...out.matchAll(/([a-z-]+)\/[a-z-]+/g)].map((m) => m[1]!),
+    ),
+    propagated: (out.match(/\[PROPAGATE\]/g) ?? []).length,
+    claim: /\[CLAIM\]\s*([\s\S]*?)(?=\n\[|$)/.exec(out)?.[1]?.trim(),
+  }
+}
+
+/**
+ * Run one digestion per file and report only what can be judged without the
+ * user. The novelty verdict is deliberately NOT computed here: grading a claim
+ * is the user's job, and an instrument that grades itself is the failure this
+ * project exists to catch.
+ */
+export async function bench(dir: string): Promise<Digest[]> {
+  const files = readdirSync(dir)
+    .filter((f) => f.endsWith('.md'))
+    .sort()
+  const results: Digest[] = []
+  for (const f of files) {
+    const catalyst = readFileSync(join(dir, f), 'utf8')
+    const out = await run(catalyst, { trainer: ['role'] })
+    results.push(measure(f, out))
+  }
+  return results
 }

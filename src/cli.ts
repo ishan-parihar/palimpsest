@@ -127,6 +127,46 @@ async function falsify(only?: string): Promise<void> {
   if (failed.length) process.exit(2)
 }
 
+/**
+ * Instrument test across many catalysts. Reports only what can be judged
+ * without the user. The novelty verdict is NOT computed here on purpose.
+ */
+function benchReport(results: audit.Digest[]): void {
+  const n = results.length
+  const converged = results.filter((r) => r.converged)
+  const oneClaim = results.filter((r) => r.claims === 1)
+  const contact = results.map((r) => r.touch.length).sort((a, b) => a - b)
+  const clusters = results.map((r) => r.clusters.size)
+  const contra = results.map((r) => r.contradictions)
+  const median = (a: number[]) => a[Math.floor(a.length / 2)] ?? 0
+
+  console.log(`\n=== BENCH: ${n} catalysts ===\n`)
+  console.log(`converged to a claim      ${converged.length}/${n}`)
+  console.log(`converged to exactly one  ${oneClaim.length}/${n}`)
+  console.log(`contact surface           min ${contact[0]} median ${median(contact)} max ${contact.at(-1)}`)
+  console.log(`clusters spanned          min ${Math.min(...clusters)} median ${median(clusters)} max ${Math.max(...clusters)}`)
+  console.log(`contradictions            ${contra.join(', ')}  (total ${contra.reduce((a, b) => a + b, 0)})`)
+  console.log(`\nper-input:`)
+  for (const r of results) {
+    const flags = [
+      !r.converged ? 'NO-CLAIM' : '',
+      r.claims > 1 ? `SPRAWL(${r.claims})` : '',
+      r.touch.length < 3 ? 'THIN' : '',
+      r.clusters.size < 2 ? 'SINGLE-CLUSTER' : '',
+    ].filter(Boolean)
+    console.log(
+      `  ${r.file.padEnd(36)} touch ${String(r.touch.length).padStart(2)}  ` +
+      `clusters ${r.clusters.size}  contra ${r.contradictions}  ${flags.join(' ')}`,
+    )
+  }
+
+  console.log(`\n--- claims, for YOU to grade ---`)
+  for (const r of results) {
+    console.log(`\n[${r.file}]`)
+    console.log(r.claim ?? '(none)')
+  }
+}
+
 const ver = (v: string): Verdict => {
   if (!['integrated', 'rejected', 'not-my-language'].includes(v))
     die('verdict must be: integrated | rejected | not-my-language')
@@ -142,11 +182,12 @@ switch (cmd) {
     ? console.log(`latest assimilation marked ${rest[0]}`)
     : die('no PENDING assimilation to settle'); break
   case 'atlas': atlasCmd(rest[0]); break
+  case 'bench': benchReport(await audit.bench(rest[0] ?? die('usage: palimpsest bench <dir>'))); break
   case 'propagate': {
     const p = propagate(rest[0]?.split(',') ?? [], Number(rest[1] ?? 1))
     console.log(`${p.size} reachable`)
     for (const [name, path] of p) console.log(`  ${name}  ${path.at(-1) ?? '(seed)'}`)
     break
   }
-  default: die(`unknown command "${cmd}"\nusage: palimpsest [session|digest|falsify|state|settle|atlas|propagate]`)
+  default: die(`unknown command "${cmd}"\nusage: palimpsest [session|digest|falsify|state|settle|atlas|propagate|bench]`)
 }
