@@ -17,8 +17,8 @@ Progress is assimilation, never coverage.
 
 ```
   L5  write-back        managed skill minting          (deferred)
-  L4  consolidation     mnemopi working->episodic      L4 is the exponential
-  L3  record            learn + veracity weighting     verdict is the user's
+  L4  consolidation     nothing: no ladder exists       see L4
+  L3  record            verdict in the payload          verdict is the user's
   L2  advisor           one WATCHDOG advisor           enforcement, not prompt
   L1  trainer           declarative agent, tools:[read]
   L0  substrate         mental-model-atlas, 801 cards  read-only
@@ -51,9 +51,14 @@ thinkingLevel: high
 `tools: [read]` is the trainer/executor line. The trainer can look a card up. It
 cannot run a command, write a file, or reach the network.
 
-**It also cannot record.** `learn` is a write tool, so it is absent from the
-allowlist. The trainer physically cannot write to memory. Verdicts are therefore
-structurally the user's — not a rule it could forget, a capability it lacks.
+**It also cannot record, and that now has two independent mechanisms.** `learn`
+is a write tool, so it is absent from the allowlist. It is also no longer
+registered at all: `~/.omp/agent/config.yml` has no `memory.backend`, so omp's
+default `off` applies and the memory tools — `retain`, `learn`, `recall`,
+`reflect`, `memory_edit` — are gated off in `tools/index.ts` before the allowlist
+is even consulted. `autolearn.enabled` is still true and does not matter; the
+`learn` gate requires both. Whichever mechanism is inspected first, the verdict
+stays the user's: not a rule the trainer could forget, a capability it lacks.
 
 Prompt: `trainer/role.md`, always resident.
 
@@ -101,22 +106,54 @@ never answers, never praises. It reports violations and gets out of the way.
 
 ### L3 — record
 
-`learn`, gated behind `autolearn.enabled` plus a memory backend. Not a flat log
-file — a veracity-weighted store with a real degradation path.
+A retention call, not a write tool. The record reaches memory-wire after the
+transcript is parsed, and it is the only thing in this repo that speaks HTTP.
 
-Verdicts map onto `veracity`, which `mnemopi` already tracks as a first-class
-field with values including `'false'`:
+**memory-wire, and nothing else.** One 8.6 MiB binary, three shared libraries,
+no npm dependency, no embedded database. `src/memory.ts` is a `fetch()` client
+against `POST /banks/:id/retain` and `POST /banks/:id/recall`.
 
-| Verdict | Effect |
-|---|---|
-| `integrated` | high `importance`, promoted to episodic on age |
-| `rejected` | `veracity: 'false'` — retained and degraded, never deleted |
-| `not-my-language` | `veracity: 'inferred'`, low `importance` |
-| `PENDING` | working tier, awaiting the user |
+**memory-wire has no `veracity` field, and no consolidation ladder** — the ladder
+was removed upstream rather than left as a model of behaviour that does not run.
+So the verdict is encoded in the two places a caller can actually read:
 
-A rejected assimilation is marked false, not removed, because "I rejected this
-and here is why" is itself the most useful thing in the store. Deleting it would
-destroy the only record that the claim was ever tested.
+| Where | What | Why |
+|---|---|---|
+| First line of `content` | `verdict: rejected` | Dedup keys on a byte-identical content hash |
+| A tag | `verdict:rejected` | `recall` can filter on it, and filtering is the only way to ask "what have I ruled out" |
+| `context` | `claim` + `falsifier` | The condition the claim was made under, stored beside the content |
+
+| Verdict | Tag | Retrieval |
+|---|---|---|
+| `integrated` | `verdict:integrated` | recalled as a claim that held |
+| `rejected` | `verdict:rejected` | **still there, still findable, tagged as ruled out** |
+| `not-my-language` | `verdict:not-my-language` | present, marked as not-mine |
+| `PENDING` | `verdict:PENDING` | no ruling yet; nothing is filtered in or out |
+
+**The verdict line in the content is load-bearing, and not for the reason it
+looks.** memory-wire dedups a byte-identical retain and returns the id of the
+memory that already holds it, storing no second copy. A verdict carried only in
+the tags would therefore never move: settling a record from `rejected` to
+`integrated` would dedup onto the existing row and that row would keep saying
+`rejected`, silently. Different verdict in the content means different bytes
+means a genuinely new memory, and the rejected one stays exactly where it was.
+
+**Nothing is ever deleted, and that holds by construction rather than by
+configuration.** memory-wire has no scheduler at all — nothing expires on a timer,
+with or without the daemon. A bank that wants to forget sets `ttl_days` in its own
+config and runs `memory-wire sweep` by hand. A rejected assimilation is therefore
+marked false in the only two places memory-wire can mark anything — the
+`verdict:rejected` tag and the `verdict: rejected` line — and kept, because "I
+rejected this and here is why" is itself the most useful thing in the store;
+deleting it would destroy the only record that the claim was ever tested. The
+previous implementation had to engineer this against a working-memory trim that
+hard-deleted unconsolidated rows after 24h. Here it is one assertion: the bank
+config carries no `ttl_days`.
+
+Settling appends. The store is a log of what was tried and ruled out, not a row
+with a mutable verdict. `state/assimilation.log` stays the committed mirror of the
+*current* verdict, and two stores are still cheaper than losing the record to a
+config error.
 
 Record shape, one entry per session:
 
@@ -138,10 +175,21 @@ measures either.
 
 ### L4 — consolidation
 
-`mnemopi` age-gated working→episodic promotion with episode summarisation,
-veracity weighting, and fact extraction. **This is the exponential**, and it is
-not something to build: connected nodes process a catalyst in ways a flat list
-cannot, and consolidation compounds that across sessions.
+**There isn't one, and the plan's claim that it was the exponential was wrong
+about this substrate.** memory-wire removed its working→episodic ladder upstream:
+promote/evict/retention had no scheduler and no caller, so the code was deleted
+rather than left as decoration. What ships is FTS5 BM25 fused with a token-overlap
+rank by RRF, over an append-only bank of retains.
+
+Retrieval still gets better with use — more sessions means more rows means a
+richer lexical pool — but that is accumulation, not synthesis, and calling it
+compounding would be the overclaim. The measurable version of the old Phase 4 gate
+is restated in `docs/plan.md`: synthesis is a claim to be checked by hand, not a
+tier the store promotes into.
+
+The deliberate consequence: a claim that was integrated and a claim that was
+rejected are both still in the bank a year later, and nothing degrades the loser
+automatically. The `verdict:` tag is how retrieval tells them apart.
 
 ### L5 — write-back (deferred)
 
@@ -187,3 +235,5 @@ A gate that cannot fail is decoration.
 | falsifier: novelty | **never auto-passes** — the user grades every claim |
 | advisor tone | the trainer praised and no blocker fired |
 | empty transcript | any check reads silence as success |
+| memory: rejected stays | a rejected record is unfindable, or its tag stops being `verdict:rejected` |
+| memory: verdict cannot move | settling a record edits the rejected row instead of appending |

@@ -1,7 +1,12 @@
 import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { run, sessionArgs } from './omp'
-import { append, read, settle, type Verdict } from './assimilate'
+import { run, sessionArgs, REPO } from './omp'
+import { append, read, settle, type Assimilation, type Verdict } from './assimilate'
+import { parse, toAssimilation, fromAssimilation, type Record as SessionRecord } from './record'
+import { readLatest } from './session-read'
+// The bank id comes from memory.ts rather than being re-derived here: one project
+// is one memory-wire namespace, and a second derivation is a second namespace.
+import { bankFor, persistRecord } from './memory'
 import * as audit from './audit'
 import { cards, tier, propagate, primitives } from './atlas'
 
@@ -15,14 +20,57 @@ const die = (m: string): never => {
 const slug = (s: string) => s.replace(/\s+/g, ' ').trim().slice(0, 80)
 
 /**
+ * Write one record into memory-wire. Never throws: the flat log is the committed
+ * mirror, so a memory-store failure must not cost the assimilation itself -- but
+ * it is reported, because a silent failure here looks exactly like a record that
+ * was retained and never used.
+ */
+async function persist(r: SessionRecord, cwd: string): Promise<void> {
+  const bank = bankFor(cwd)
+  try {
+    await persistRecord(r, { bank, sessionId: bank })
+  } catch (e) {
+    console.error(`\n--- logged, but memory-wire refused it: ${String(e).slice(0, 200)} ---`)
+  }
+}
+
+/** Record one parsed transcript: flat log first, then the memory mirror. */
+async function record(r: SessionRecord, cwd: string, header: Partial<Assimilation> = {}): Promise<void> {
+  append({ ...toAssimilation(r), ...header })
+  await persist(r, cwd)
+}
+
+/**
+ * Read back the transcript omp just wrote and record it.
+ *
+ * The spawn is untouched: stdio stays inherited, because piping it breaks the
+ * TUI. omp persists sessions itself, so the file is the input -- which is the
+ * whole reason this is a reader and not a parser of a piped stream.
+ */
+async function recordSession(): Promise<void> {
+  try {
+    const s = readLatest(REPO)
+    if (!s) {
+      console.error('\n--- no session transcript found: nothing was recorded ---')
+      return
+    }
+    await record(parse(s.messages), s.cwd || REPO)
+    console.error('\n--- recorded to state/assimilation.log (verdict PENDING) ---')
+  } catch (e) {
+    console.error(`\n--- session transcript unreadable: ${String(e).slice(0, 200)} ---`)
+  }
+}
+
+/**
  * The interactive session. omp's TUI is the interface; the launcher is plumbing.
  *
  * The capability boundary comes from agents/trainer.md via sessionArgs(), and
- * stdio stays inherited so the TUI keeps the terminal.
+ * stdio stays inherited so the TUI keeps the terminal. Recording happens after
+ * exit, from the transcript on disk.
  */
 function session(extra: string[] = []): void {
   const child = spawn('omp', sessionArgs(extra), { stdio: 'inherit' })
-  child.on('close', (c) => process.exit(c ?? 0))
+  child.on('close', (c) => void recordSession().then(() => process.exit(c ?? 0)))
 }
 
 async function digest(path: string): Promise<void> {
@@ -36,22 +84,17 @@ async function digest(path: string): Promise<void> {
     console.error('\n--- no [ASSIMILATION] block: nothing was recorded ---')
     return
   }
-  const g = (k: string) =>
-    new RegExp(`^${k}:\\s*(.+)$`, 'm').exec(block)?.[1]?.trim() ?? undefined
-  const list = (k: string) =>
-    g(k)?.split(/,\s*/).map((s) => s.trim()).filter(Boolean)
 
-  append({
-    date: g('date') ?? new Date().toISOString().slice(0, 10),
-    catalyst: slug(g('catalyst') ?? path),
-    reading: g('reading'),
-    touch: list('touch'),
-    propagated: list('propagated'),
-    contradiction: g('contradiction'),
-    claim: g('claim'),
-    falsifier: g('falsifier'),
-    verdict: 'PENDING',
-  })
+  // One parse, in record.ts: the block wins over scattered markers, and the
+  // verdict is hard-coded PENDING there, so the trainer cannot grade itself.
+  // withheld, declined and overreach come out of the same parse as the rest
+  // rather than being written empty.
+  const r = parse([{ role: 'user', text: catalyst }, { role: 'assistant', text: out }])
+  // The two fields the record schema does not model stay here: they are log
+  // header, not one of the nine facts.
+  const field = (k: string) => new RegExp(`^${k}:\\s*(.+)$`, 'm').exec(block)?.[1]?.trim()
+
+  await record(r, REPO, { catalyst: slug(field('catalyst') ?? path), reading: field('reading') })
   console.error('\n--- recorded to state/assimilation.log (verdict PENDING) ---')
 }
 
@@ -186,9 +229,16 @@ switch (cmd) {
   case 'digest': await digest(rest[0] ?? die('usage: palimpsest digest <file|->')); break
   case 'falsify': await falsify(rest[0]); break
   case 'state': state(); break
-  case 'settle': settle(ver(rest[0] ?? die('usage: palimpsest settle <verdict>')))
-    ? console.log(`latest assimilation marked ${rest[0]}`)
-    : die('no PENDING assimilation to settle'); break
+  case 'settle': {
+    const verdict = ver(rest[0] ?? die('usage: palimpsest settle <verdict>'))
+    if (!settle(verdict)) die('no PENDING assimilation to settle')
+    // The log is the mirror; the verdict has to reach memory-wire too, or a
+    // rejected claim keeps living in the store as something true.
+    const latest = read().at(-1)
+    if (latest) await persist(fromAssimilation(latest), REPO)
+    console.log(`latest assimilation marked ${verdict}`)
+    break
+  }
   case 'atlas': atlasCmd(rest[0]); break
   case 'bench': {
     const dir = rest[0] ?? die('usage: palimpsest bench <dir>')

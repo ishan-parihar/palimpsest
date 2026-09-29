@@ -67,39 +67,91 @@ the marginal cost stays low.
 
 ## Phase 3 — Memory-backed record
 
-**The gap:** a flat log cannot express what actually matters here — that a claim
-was tested and rejected. `mnemopi` has `veracity` as a first-class field with a
-`'false'` value and an `importance` weight, plus a degradation query.
+**Status: built, on memory-wire rather than `mnemopi`.** The gap the phase named
+was real — a flat log cannot express what actually matters here, that a claim was
+tested and rejected — but the substrate changed under it. `mnemopi`'s first-class
+`veracity` field with a `'false'` value is gone from the picture, along with the
+whole weight/tier apparatus that phase leaned on.
 
 **Build**
 
-1. Enable `autolearn.enabled` and a memory backend (`mnemopi`).
-2. `src/record.ts` writes through mnemopi instead of the flat log. Verdicts map
-   to veracity: `integrated` → high importance; `rejected` → `veracity: 'false'`,
-   **retained and degraded, never deleted**; `not-my-language` → `veracity:
-   'inferred'`, low importance.
-3. `settle` writes through the same path.
+1. `src/memory.ts` is a `fetch()` client against memory-wire. **No npm
+   dependency** — the repo is back to `package.json`-less, which is where it
+   started. `POST /banks/:id/retain` with the record, `POST /banks/:id/recall`
+   to read it back.
+2. Verdicts go in the payload, in two places, because memory-wire has **no
+   `veracity` field**:
+   - a `verdict: <v>` line at the top of the content, and
+   - a `verdict:<v>` tag, which is what makes `recall` able to answer "what have
+     I ruled out, and why".
+
+   The content line is load-bearing, not decoration. Retain dedups on a
+   byte-identical content hash and returns the id of the row that already holds
+   it, storing no second copy — so a verdict living only in the tags would never
+   move. Settling a record from `rejected` to `integrated` would dedup onto the
+   existing row and that row would keep saying `rejected`, silently.
+3. `settle` writes through the same path, appending a new memory per verdict
+   change. The rejected row is not edited and not removed.
 4. The flat log stays as an auditable mirror, git-committed. Two stores is
    cheaper than losing the record to a config error.
+5. `memory.backend` is **not** enabled in `~/.omp/agent/config.yml`. It does not
+   need to be, and turning it on would add a second store omp manages itself.
+   Consequence worth stating: `learn` is no longer registered in any session
+   (see architecture.md L1), so the trainer cannot record by capability absence
+   *and* by allowlist absence.
 
-**Gate:** an `integrated` record promotes to episodic; a `rejected` record is
-still retrievable with `veracity: 'false'`. Fails if rejection deletes.
+**Gate — restated, because the substrate cannot express the original.** The
+original read "an `integrated` record promotes to episodic; a `rejected` record is
+still retrievable with `veracity: 'false'`. Fails if rejection deletes." There is
+no veracity and no episodic tier to assert against. What holds instead:
 
-**Needs you:** one decision — which memory backend, and whether lessons are
-project or global scope. Global scope requires `mnemopi`.
+- a rejected record is retained with an id and **recalled back**, and its content
+  still leads with `verdict: rejected`;
+- it is retrievable **by its `verdict:rejected` tag**, and invisible under a tag
+  nothing carries;
+- settling it appends a second memory, the rejected one is untouched and still
+  tagged, and re-retaining the same verdict is a no-op returning the same id;
+- and nothing is deleted: the bank's config carries **no `ttl_days`**, and
+  memory-wire has no scheduler, so "retained, never deleted" holds by
+  construction instead of by configuration. The "and degraded" half of the
+  original wording is gone with the ladder — nothing degrades the loser
+  automatically, so the `verdict:rejected` tag is the only thing telling a
+  rejection apart from an acceptance at retrieval time.
+
+The last one is the gate that matters. In the `mnemopi` implementation it was the
+hard part — a working-memory trim hard-deleted unconsolidated rows after 24h, and
+the never-deleted property had to be engineered with a large TTL and a disabled
+count limit. Here it is the absence of a feature.
+
+**Decided:** the backend is memory-wire, and lessons are **project** scope — one
+bank per project, derived from the session's `cwd`. Global scope is memory-wire's
+`default` bank, and the phase's "which backend" question is answered.
+
+**Needs you:** nothing.
 
 ---
 
 ## Phase 4 — Verify consolidation actually compounds
 
-**The gap:** consolidation is the exponential and it is entirely unverified. It
-could be plumbing that does nothing.
+**Restated, and the premise is gone.** The original gate was "after N sessions,
+episodic memory contains claims that appear in no individual session — i.e.
+synthesis happened, not just accumulation". memory-wire **removed its
+consolidation ladder upstream**: promote/evict/retention had no scheduler and no
+caller, so the code was deleted rather than left as a model of behaviour that does
+not run. There is no episodic tier to inspect, so the original gate is not
+passable as written.
 
 **Build:** nothing new. Run sessions over time and measure.
 
-**Gate:** after N sessions, episodic memory contains claims that appear in no
-individual session — i.e. synthesis happened, not just accumulation. Until this
-gate passes, Phase 5 does not start.
+**Gate, in session terms:** the question the phase was really asking — "did my
+mind actually change?" — is answerable from the sessions themselves, not from a
+tier the store promotes into. After N sessions, a claim is synthesised when it
+appears in **no single session transcript** and the user rules it `integrated`:
+the trainer could not have retrieved it, so it came from recombination. Grade that
+by hand, like `novelty`; there is no automated version, and an instrument that
+grades itself is the failure mode this project exists to detect.
+
+Until this gate passes, Phase 5 does not start.
 
 **Needs you:** the sessions, and the grading. This is the phase where the
 question "did my mind actually change" gets its first non-hand-wavy answer.
@@ -132,7 +184,7 @@ before it is infrastructure whose only justification is what Phase 4 measures.
 |---|---|---|
 | 1 | unchanged | session-file parsing may be brittle |
 | 2 | +1 per turn | advisor noise; mitigated by `maxNotesPerUpdate` |
-| 3 | unchanged | two stores can drift; flat log is the mirror |
+| 3 | unchanged | a verdict can dedup onto the wrong row; mitigated by the verdict line in the content |
 | 4 | unchanged | **the real risk: no measurable change in the user's mind** |
 | 5 | unchanged | premature substrate growth |
 

@@ -125,6 +125,29 @@ export function parse(messages: TranscriptMessage[]): Record {
   }
 }
 
+/**
+ * The inverse: a flat-log row back into a record, for the one write path that
+ * has no transcript to parse -- `settle`, which changes the verdict on an entry
+ * that is already on disk. `reading` is dropped because it is log-header
+ * metadata outside the nine schema fields; the flat log keeps it verbatim, and
+ * it is a nuance on `brought` rather than a ninth fact.
+ */
+export function fromAssimilation(a: Assimilation): Record {
+  return {
+    date: a.date,
+    brought: a.catalyst,
+    fired: a.touch ?? [],
+    withheld: a.withheld ?? [],
+    declined: a.declined ?? [],
+    contradiction: a.contradiction,
+    overreach: a.overreach ?? [],
+    claim: a.claim,
+    falsifier: a.falsifier,
+    verdict: a.verdict,
+    propagated: a.propagated ?? [],
+  }
+}
+
 /** The flat-log row for a record: `brought` is the catalyst, `fired` the touch set. */
 export function toAssimilation(r: Record): Assimilation {
   return {

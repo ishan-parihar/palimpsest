@@ -55,3 +55,60 @@ still returns `success: true`, so read `prompt_result.status`.
 `set_host_tools` lets the host serve tools to the agent with **zero extension
 code** — which is how the atlas should be exposed in Phase 3, rather than
 growing the extension surface.
+
+## The memory-wire daemon this repo talks to
+
+Phase 3 records through [memory-wire](https://github.com/ishan-parihar/memory-wire)
+v0.5.0 over loopback HTTP. `src/memory.ts` is the only file that speaks it.
+
+```bash
+memory-wire daemon start --addr 127.0.0.1:18899 --db ~/.local/share/memory-wire/palimpsest.db
+memory-wire daemon status            # exit 0 only when a server is really answering
+memory-wire daemon stop
+```
+
+| | |
+|---|---|
+| addr | `http://127.0.0.1:18899` |
+| db | `~/.local/share/memory-wire/palimpsest.db` |
+| health | `GET /health` returns exactly `ok`, plain text, 200 |
+| state file | `~/.local/share/memory-wire/serve.json` |
+| log | `~/.local/share/memory-wire/serve.log` |
+
+**8888 is not ours, and must not be touched.** It is the tree-wide default
+(`paths::DEFAULT_ADDR`) and on this box it is a **foreign process** — a database
+service that answers `/health` with
+`{"status":"healthy","database":"connected",…}` rather than `ok`. That is exactly
+the case memory-wire's health check is built for: any process on the port answers
+200, so only a body of exactly `ok` counts. `memory-wire doctor` with no
+`MEMORY_WIRE_URL` therefore reports `server down: unexpected health response`,
+which is the tool being honest rather than broken.
+
+Two consequences, both worth knowing before a session fails mysteriously:
+
+- **The client does not default to 8888.** `src/memory.ts` falls back to
+  `http://127.0.0.1:18899`. Override with `PALIMPSEST_MEMORY_ADDR`, or with
+  `MEMORY_WIRE_URL` — memory-wire's own variable, which its hooks and `doctor`
+  read, so setting it once points palimpsest, the hooks and `doctor` at the same
+  server.
+- **`doctor` needs that variable too**, because it resolves its endpoint through
+  `paths::endpoint()` and that is the same 8888 literal:
+
+  ```bash
+  MEMORY_WIRE_URL=http://127.0.0.1:18899 memory-wire doctor --db ~/.local/share/memory-wire/palimpsest.db
+  # endpoint http://127.0.0.1:18899 · store … (297.1 KiB, ok) · server up
+  ```
+
+**The db is this repo's, not the shared one.** memory-wire's install runbook
+defaults to `~/.local/share/memory-wire/agents.db`, which holds every other host's
+memories. Phase 3 keeps a separate `palimpsest.db` so a `memory-wire sweep` run
+for another project can never be pointed at this store by accident, and so a
+corrupt palimpsest db is not a shared-store incident.
+
+**The server has no authentication and is unauthenticated by design**, which is
+why `--addr` defaults to loopback and why a non-loopback bind prints a warning
+first. Keep it on loopback. There is no supervision here beyond the daemon: it
+detaches into its own session via `setsid`, records pid **and process start time**
+(because a pid is not an identity), and `stop` sends the same SIGTERM `serve`
+already handles, waiting for the drain.
+

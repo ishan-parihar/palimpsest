@@ -53,6 +53,9 @@ src/atlas.ts        card index + primitive lattice
 src/omp.ts          the only place that spawns omp
 src/audit.ts        the falsifier
 src/assimilate.ts   the record
+src/record.ts       transcript-to-record parser, verdict hardwired PENDING
+src/session-read.ts latest-session transcript reader (JSONL, no omp import)
+src/memory.ts       memory-wire client — persistRecord by bank + verdict tags
 state/              assimilation.log, committed
 ```
 
