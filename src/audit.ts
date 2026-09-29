@@ -167,9 +167,20 @@ export function measure(file: string, out: string, error?: string): Digest {
     .filter((l) => l.length > 3)
 
   const { families, cards: names } = knownNames()
-  const hay = out.toLowerCase()
-  const clusters = new Set(families.filter((f) => hay.includes(f.toLowerCase())))
-  const cardsNamed = names.filter((n) => hay.includes(n.toLowerCase())).length
+  // Normalise hyphens to spaces on both sides: the index stores
+  // "systems-thinking" but prose writes "systems thinking". Plain substring,
+  // no word-boundary padding -- padding breaks at every newline, which is where
+  // most of these names actually land. A short needle could match inside a
+  // longer word, so the minimum length guard stays.
+  const hay = out.toLowerCase().replace(/-/g, ' ')
+  const hit = (needle: string) => hay.includes(needle.toLowerCase().replace(/-/g, ' '))
+  const clusters = new Set(
+    families.filter((f) => {
+      const leaf = f.split('/').pop() ?? ''
+      return hit(f) || (leaf.length >= 8 && hit(leaf))
+    }),
+  )
+  const cardsNamed = names.filter((n) => n.length >= 8 && hit(n)).length
 
   return {
     file,
