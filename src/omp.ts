@@ -2,13 +2,21 @@
  * omp invocation.
  *
  * Two deliberate restrictions, both load-bearing:
- *   --tools=read    the trainer can look a card up. It cannot read a directory,
- *                   run a command, write a file, or touch the network. That is
- *                   the architectural form of "trainer, not executor": the
- *                   capability to execute is simply absent, not merely refused.
+ *   agents/trainer.md   the trainer/executor line is DECLARED, not flagged. Its
+ *                       `tools: [read]` allowlist is the source of truth and
+ *                       sessionArgs() derives `--tools` from it. The trainer can
+ *                       look a card up; it cannot read a directory, run a
+ *                       command, write a file, or reach the network. Absence,
+ *                       not restraint.
  *   --no-rules --no-skills
- *                   no inherited project discipline, no 120 ambient skills. The
- *                   trainer's only instructions are the ones in trainer/.
+ *                       no inherited project discipline, no 120 ambient skills.
+ *                       The trainer's only instructions are the ones in trainer/.
+ *
+ * omp has no flag for routing the top-level session through an agent definition
+ * (verified against the launch flag table: definitions are discovered for the
+ * `task` subagent system only, from `.omp/agents/` and the user agents dir). So
+ * the launcher compiles the definition into the spawn. The one-shot paths in
+ * run() keep passing the flags directly and are deliberately left alone.
  */
 import { spawn } from 'node:child_process'
 import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs'
@@ -17,6 +25,94 @@ import { join } from 'node:path'
 
 export const REPO = import.meta.dirname + '/..'
 export const ATLAS = process.env.PALIMPSEST_ATLAS ?? `${process.env.HOME}/.agents/skills/mental-model-atlas`
+
+/** The declarative trainer: capabilities, model, thinking level, prompt. */
+export const AGENT = join(REPO, 'agents', 'trainer.md')
+
+export type TrainerAgent = {
+  name: string
+  /** The capability allowlist. This IS the trainer/executor boundary. */
+  tools: string[]
+  /** Undefined means "the default role", i.e. no --model override. */
+  model?: string
+  thinkingLevel?: string
+  /** Absolute path to the always-resident system prompt. */
+  prompt: string
+}
+
+const unquote = (s: string) => s.replace(/^["']|["']$/g, '').trim()
+
+/**
+ * The slice of YAML an agent definition needs: `key: scalar`, `key: [a, b]`,
+ * and `key:` followed by indented `- item`. Deliberately not a YAML parser — it
+ * reads only what agents/trainer.md uses and throws on anything it does not
+ * recognise, because a silently-misread `tools:` would hand the trainer a full
+ * toolset while the definition still reads like a boundary. Same reason
+ * trainerAgent() rejects an empty allowlist: `tools:` with nothing under it is a
+ * typo, and omp reads that as "no tools", not "all tools".
+ */
+function frontmatter(text: string): { fields: Record<string, string[]>; body: string } {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(text)
+  if (!m) throw new Error(`${AGENT}: no YAML frontmatter`)
+
+  const fields: Record<string, string[]> = {}
+  let key: string | undefined
+  for (const line of m[1].split(/\r?\n/)) {
+    const item = /^\s*-\s+(.*)$/.exec(line)
+    if (item) {
+      if (!key) throw new Error(`${AGENT}: list item with no key: ${line}`)
+      fields[key]!.push(unquote(item[1]!))
+      continue
+    }
+    const kv = /^([A-Za-z][\w-]*):\s*(.*)$/.exec(line)
+    if (!kv) throw new Error(`${AGENT}: unparseable frontmatter line: ${line}`)
+    key = kv[1]
+    const rest = kv[2].trim()
+    fields[key] = rest === ''
+      ? []
+      : rest.replace(/^\[/, '').replace(/\]$/, '').split(',').map(unquote).filter(Boolean)
+  }
+  return { fields, body: m[2]! }
+}
+
+/** Read agents/trainer.md. Throws rather than guessing if the boundary is unreadable. */
+export function trainerAgent(): TrainerAgent {
+  const { fields, body } = frontmatter(readFileSync(AGENT, 'utf8'))
+  const at = (k: string) => fields[k]?.[0]
+  const tools = fields.tools ?? []
+  const prompt = /^\s*System prompt:\s*(\S+)\s*$/m.exec(body)?.[1]
+
+  if (!at('name')) throw new Error(`${AGENT}: name is required`)
+  if (!tools.length) throw new Error(`${AGENT}: tools must be a non-empty allowlist`)
+  if (!prompt) throw new Error(`${AGENT}: no "System prompt: <file>" reference in the body`)
+
+  // `@default` IS the default role, so it is expressed as the absence of an
+  // override rather than as a --model value (the @-prefixed form is a
+  // definition key, not a documented CLI value).
+  const model = at('model')
+  return {
+    name: at('name')!,
+    tools,
+    model: model && model !== '@default' ? model : undefined,
+    thinkingLevel: at('thinkingLevel'),
+    prompt: join(REPO, prompt),
+  }
+}
+
+/** Args for the interactive session, derived from the agent definition. */
+export function sessionArgs(extra: string[] = []): string[] {
+  const a = trainerAgent()
+  return [
+    '--no-rules', '--no-skills',
+    `--tools=${a.tools.join(',')}`,
+    '--cwd', REPO,
+    '--add-dir', ATLAS,
+    ...(a.model ? ['--model', a.model] : []),
+    ...(a.thinkingLevel ? ['--thinking', a.thinkingLevel] : []),
+    '--append-system-prompt', a.prompt,
+    ...extra,
+  ]
+}
 
 export type RunOpts = {
   /** Trainer contract files to append, in order. */

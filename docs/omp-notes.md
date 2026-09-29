@@ -17,7 +17,7 @@ it *is* pi. Docs live in the repo under `docs/` — `rpc.md` (42KB),
 | Need | Route | Why not the bigger one |
 |---|---|---|
 | Custom behaviour | `--append-system-prompt <file>` | Keeps the whole default harness; `--system-prompt` replaces the tool inventory and workflow rules too |
-| Restrict capability | `--tools=read` | Absence, not restraint. This is the trainer/executor line |
+| Restrict capability | `agents/trainer.md` (`tools: [read]`), compiled into the spawn by `src/omp.ts` | Absence, not restraint. This is the trainer/executor line, declared rather than flagged; the launcher fails loud on anything it cannot parse |
 | Determinism | `--no-rules --no-skills` | No 120 ambient skills, no inherited project discipline |
 | Atlas access | `--add-dir <atlas>` | Referenced explicitly by `role.md` rather than discovered, so the substrate is guaranteed rather than ambient |
 

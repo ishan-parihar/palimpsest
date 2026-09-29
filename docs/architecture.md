@@ -68,7 +68,7 @@ instructions: |
 maxNotesPerUpdate: 3
 advisors:
   - name: conscience
-    model: ["@smol"]        # cheap role; this runs every turn
+    model: "@smol"           # cheap role; this runs every turn. STRING, not a list: the advisor entry schema declares "model?": "string" and drops an array with a warning.
     tools: [read]           # read-only, so it can verify a source, never edit
     maxNotesPerUpdate: 2
 ```

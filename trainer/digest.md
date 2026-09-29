@@ -77,8 +77,11 @@ date: <YYYY-MM-DD>
 catalyst: <one line>
 reading: <the reading you took>
 touch: <comma-separated nodes>
+withheld: <relevant but unused frameworks and why, or none>
+declined: <correct non-applications, or none>
 propagated: <comma-separated primitive links>
 contradiction: <what it broke, or none>
+overreach: <where a framework was pushed past its ceiling, or none>
 claim: <the one integrated claim>
 falsifier: <the observation that would show it wrong>
 user-verdict: PENDING

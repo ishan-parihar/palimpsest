@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { run, REPO, ATLAS } from './omp'
+import { run, sessionArgs } from './omp'
 import { append, read, settle, type Verdict } from './assimilate'
 import * as audit from './audit'
 import { cards, tier, propagate, primitives } from './atlas'
@@ -14,18 +14,14 @@ const die = (m: string): never => {
 
 const slug = (s: string) => s.replace(/\s+/g, ' ').trim().slice(0, 80)
 
-/** The interactive session. omp's TUI is the interface; the launcher is plumbing. */
+/**
+ * The interactive session. omp's TUI is the interface; the launcher is plumbing.
+ *
+ * The capability boundary comes from agents/trainer.md via sessionArgs(), and
+ * stdio stays inherited so the TUI keeps the terminal.
+ */
 function session(extra: string[] = []): void {
-  const child = spawn(
-    'omp',
-    [
-      '--no-rules', '--no-skills', '--tools=read',
-      '--cwd', REPO, '--add-dir', ATLAS,
-      '--append-system-prompt', `${REPO}/trainer/role.md`,
-      ...extra,
-    ],
-    { stdio: 'inherit' },
-  )
+  const child = spawn('omp', sessionArgs(extra), { stdio: 'inherit' })
   child.on('close', (c) => process.exit(c ?? 0))
 }
 

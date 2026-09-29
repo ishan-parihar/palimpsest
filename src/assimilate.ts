@@ -20,7 +20,13 @@ export type Assimilation = {
   reading?: string
   touch?: string[]
   propagated?: string[]
+  /** Frameworks that were relevant but not used, and why not. */
+  withheld?: string[]
+  /** Correct non-applications -- the half nobody counts. */
+  declined?: string[]
   contradiction?: string
+  /** Where a framework was pushed past its ceiling. */
+  overreach?: string[]
   claim?: string
   falsifier?: string
   verdict: Verdict
@@ -32,41 +38,57 @@ function field(body: string, key: string): string | undefined {
 
 export function read(): Assimilation[] {
   if (!existsSync(LOG)) return []
-  return readFileSync(LOG, 'utf8')
-    .split(/^## /m)
-    .slice(1)
-    .map((block) => {
-      const head = /^(\S+)\s+·\s+(.+)$/m.exec(block)
-      return {
-        date: head?.[1] ?? '?',
-        catalyst: head?.[2]?.trim() ?? '?',
-        reading: field(block, 'reading'),
-        touch: field(block, 'touch')?.split(',').map((s) => s.trim()),
-        propagated: field(block, 'propagated')?.split(',').map((s) => s.trim()),
-        contradiction: field(block, 'contradiction'),
-        claim: field(block, 'claim'),
-        falsifier: field(block, 'falsifier'),
-        verdict: (field(block, 'verdict') ?? 'PENDING') as Verdict,
-      }
-    })
+  return readFileSync(LOG, 'utf8').split(/^## /m).slice(1).map(parseBlock)
 }
 
-/** Append one assimilation. Blank fields are omitted rather than written empty. */
-export function append(a: Assimilation): void {
-  mkdirSync(dirname(LOG), { recursive: true })
-  const lines = [`## ${a.date} · ${a.catalyst}`]
+/** One `## <date> · <catalyst>` block back into a record. */
+export function parseBlock(block: string): Assimilation {
+  const head = /^(\S+)\s+·\s+(.+)$/m.exec(block)
+  const list = (k: string) => field(block, k)?.split(',').map((s) => s.trim())
+  return {
+    date: head?.[1] ?? '?',
+    catalyst: head?.[2]?.trim() ?? '?',
+    reading: field(block, 'reading'),
+    touch: list('touch'),
+    propagated: list('propagated'),
+    withheld: list('withheld'),
+    declined: list('declined'),
+    contradiction: field(block, 'contradiction'),
+    overreach: list('overreach'),
+    claim: field(block, 'claim'),
+    falsifier: field(block, 'falsifier'),
+    verdict: (field(block, 'verdict') ?? 'PENDING') as Verdict,
+  }
+}
+
+/** One assimilation as log text. Blank fields are omitted rather than written empty. */
+export function format(a: Assimilation): string {
+  // The log is one line per field, so a value carrying newlines would be written
+  // whole and read back truncated. Collapse at the writer: every caller gets a
+  // round-trippable line instead of a silently shortened one on the next read.
+  const one = (s: string) => s.replace(/\s+/g, ' ').trim()
+  const lines = [`## ${a.date} · ${one(a.catalyst)}`]
   const put = (k: string, v: string | string[] | undefined) => {
     if (v === undefined || (Array.isArray(v) && !v.filter(Boolean).length)) return
-    lines.push(`- **${k}:** ${Array.isArray(v) ? v.filter(Boolean).join(', ') : v}`)
+    lines.push(`- **${k}:** ${one(Array.isArray(v) ? v.filter(Boolean).join(', ') : v)}`)
   }
   put('reading', a.reading)
   put('touch', a.touch)
   put('propagated', a.propagated)
+  put('withheld', a.withheld)
+  put('declined', a.declined)
   put('contradiction', a.contradiction)
+  put('overreach', a.overreach)
   put('claim', a.claim)
   put('falsifier', a.falsifier)
   lines.push(`- **verdict:** ${a.verdict}`, '')
-  appendFileSync(LOG, lines.join('\n'))
+  return lines.join('\n')
+}
+
+/** Append one assimilation. The log is append-only; `settle` is the only rewrite. */
+export function append(a: Assimilation): void {
+  mkdirSync(dirname(LOG), { recursive: true })
+  appendFileSync(LOG, format(a))
 }
 
 /** Set the verdict on the most recent entry whose verdict is still PENDING. */

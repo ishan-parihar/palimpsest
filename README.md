@@ -59,11 +59,18 @@ state/              assimilation.log, committed
 The launcher is plumbing. **The trainer contract is the product.** omp's TUI is
 the interface; nothing here reimplements a chat UI.
 
-### Why `--tools=read`
+### Why `agents/trainer.md`
+
+The trainer/executor line is declared, not flagged. `agents/trainer.md` carries
+`tools: [read]` and `src/omp.ts` compiles it into the spawn, failing loud on
+anything it cannot parse — a silently-misread allowlist would hand the trainer
+a full toolset while the definition still reads like a boundary.
 
 The trainer can look a card up. It cannot read a directory, run a command, write
 a file, or touch the network. "Trainer, not executor" is enforced by capability
-absence, not by asking the model to be restrained.
+absence, not by asking the model to be restrained. `learn` is a write tool, so
+it is absent too: the trainer cannot record, and verdicts are structurally the
+user's.
 
 ## The falsifier
 

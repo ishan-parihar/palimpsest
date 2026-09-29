@@ -47,7 +47,7 @@ back to `omp --export` and parse the HTML. Do not pipe.
 **Build**
 
 1. `WATCHDOG.yml` at the project root with a single `conscience` advisor:
-   `model: ["@smol"]`, `tools: [read]`, `maxNotesPerUpdate: 2`, and the full
+   `model: "@smol"` (string, not a list — the advisor schema rejects arrays), `tools: [read]`, `maxNotesPerUpdate: 2`, and the full
    check battery in the shared top-level `instructions`.
 2. Checks in one pass: tone (blocker), execution (blocker), falsifier
    (concern), discrimination (concern), sourcing (nit).
