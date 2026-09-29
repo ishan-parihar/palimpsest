@@ -11,6 +11,9 @@
  *                   trainer's only instructions are the ones in trainer/.
  */
 import { spawn } from 'node:child_process'
+import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 export const REPO = import.meta.dirname + '/..'
 export const ATLAS = process.env.PALIMPSEST_ATLAS ?? `${process.env.HOME}/.agents/skills/mental-model-atlas`
@@ -26,6 +29,26 @@ export function trainerPath(name: string): string {
   return `${REPO}/trainer/${name}.md`
 }
 
+/**
+ * Concatenate the trainer files into ONE file and return that path.
+ *
+ * Repeating --append-system-prompt is not additive: a later flag replaces the
+ * earlier value, so passing role.md then digest.md silently delivered only
+ * digest.md and the trainer ran with no contract at all. One flag, one file,
+ * no ambiguity. This is the exact failure the bench caught and the falsifier
+ * could not see, because every falsifier check greps for a marker rather than
+ * for the presence of the protocol that produces it.
+ */
+export function mergedTrainer(files: string[]): string {
+  const body = files
+    .map((f) => readFileSync(trainerPath(f), 'utf8').trim())
+    .join('\n\n---\n\n')
+  const dir = mkdtempSync(join(tmpdir(), 'palimpsest-'))
+  const out = join(dir, 'trainer-prompt.md')
+  writeFileSync(out, body)
+  return out
+}
+
 export function run(prompt: string, opts: RunOpts): Promise<string> {
   const args = [
     '-p',
@@ -35,7 +58,7 @@ export function run(prompt: string, opts: RunOpts): Promise<string> {
     '--tools=read',
     '--cwd', opts.cwd ?? REPO,
     '--add-dir', ATLAS,
-    ...opts.trainer.flatMap((t) => ['--append-system-prompt', trainerPath(t)]),
+    '--append-system-prompt', mergedTrainer(opts.trainer),
     prompt,
   ]
 

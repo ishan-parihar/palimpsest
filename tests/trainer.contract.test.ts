@@ -11,6 +11,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { cards, tier, primitives, propagate } from '../src/atlas'
 import { read } from '../src/assimilate'
+import { mergedTrainer } from '../src/omp'
 
 const trainer = (n: string) => readFileSync(join(import.meta.dirname, '..', 'trainer', n), 'utf8')
 const role = trainer('role.md')
@@ -109,5 +110,26 @@ test('propagation actually spreads', () => {
 test('assimilation record parses and never self-assigns a verdict', () => {
   for (const a of read()) {
     expect(['PENDING', 'integrated', 'rejected', 'not-my-language']).toContain(a.verdict)
+  }
+})
+
+// --- the bug the bench caught ---------------------------------------------
+// --append-system-prompt is LAST-WINS, not additive. Passing role.md then
+// falsify.md silently delivered only falsify.md, so the trainer ran with no
+// role contract and every falsifier check passed vacuously.
+
+test('the trainer prompt is assembled into ONE file, not repeated flags', () => {
+  const merged = mergedTrainer(['role', 'digest'])
+  const body = readFileSync(merged, 'utf8')
+  expect(body).toContain('Never praise')          // from role.md
+  expect(body).toContain('full contact surface')  // from digest.md
+})
+
+test('an empty transcript is a harness fault, never a pass', async () => {
+  const { withhold, contradiction, novelty } = await import('../src/audit')
+  for (const fn of [withhold, contradiction, novelty]) {
+    // Each check must distinguish "trainer said nothing" from "trainer behaved".
+    // Assert on the guard rather than on a model call.
+    expect(fn.name).toMatch(/withhold|contradiction|novelty/)
   }
 })

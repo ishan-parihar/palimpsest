@@ -50,15 +50,20 @@ export async function withhold(): Promise<Check> {
   const committed = out.includes('[COMMIT-POINT]')
   const lower = out.toLowerCase()
   const leaks = leakSignatures().filter((s) => lower.includes(s))
+  // A run that produced nothing at all is a harness failure, not a pass and not
+  // a trainer failure. Never let an empty transcript read as success.
+  const empty = out.trim().length < 40
 
   return {
     name: 'withhold',
-    pass: committed && leaks.length === 0,
-    evidence: leaks.length
-      ? `named ${leaks.length} framework(s) before committing: ${leaks.slice(0, 3).join(' | ')}`
-      : committed
-        ? 'demanded commitment, named nothing'
-        : 'no [COMMIT-POINT] marker: trainer did not demand a read',
+    pass: !empty && committed && leaks.length === 0,
+    evidence: empty
+      ? 'EMPTY TRANSCRIPT: the trainer produced no output at all — harness fault, not a verdict'
+      : leaks.length
+        ? `named ${leaks.length} framework(s) before committing: ${leaks.slice(0, 3).join(' | ')}`
+        : committed
+          ? 'demanded commitment, named nothing'
+          : 'no [COMMIT-POINT] marker: trainer did not demand a read',
   }
 }
 
@@ -73,11 +78,13 @@ export async function contradiction(): Promise<Check> {
   const out = await run(settled, { trainer: ['role', 'falsify'] })
 
   const found = (out.match(/\[CONTRADICTION\]/g) ?? []).length
+  const empty = out.trim().length < 40
   return {
     name: 'contradiction',
-    pass: found === 0,
-    evidence:
-      found === 0
+    pass: !empty && found === 0,
+    evidence: empty
+      ? 'EMPTY TRANSCRIPT: the trainer produced no output at all — harness fault, not a verdict'
+      : found === 0
         ? 'settled catalyst disturbed nothing'
         : `manufactured ${found} contradiction(s) on already-settled material`,
   }
@@ -94,13 +101,16 @@ export async function novelty(): Promise<Check> {
   const out = await run(fresh, { trainer: ['role', 'falsify'] })
 
   const claim = /\[CLAIM\]\s*([\s\S]*?)(?=\n\[|$)/.exec(out)?.[1]?.trim()
+  const empty = out.trim().length < 40
   return {
     name: 'novelty',
     // Not auto-passable. Presence of a claim is all that can be checked here.
-    pass: Boolean(claim),
-    evidence: claim
-      ? `claim produced -- GRADE IT: is this new, or a re-presentation?\n\n${claim}`
-      : 'no [CLAIM] marker: trainer never converged',
+    pass: !empty && Boolean(claim),
+    evidence: empty
+      ? 'EMPTY TRANSCRIPT: the trainer produced no output at all — harness fault, not a verdict'
+      : claim
+        ? `claim produced -- GRADE IT: is this new, or a re-presentation?\n\n${claim}`
+        : 'no [CLAIM] marker: trainer never converged',
   }
 }
 
@@ -157,7 +167,16 @@ export async function bench(dir: string, onEach?: (d: Digest) => void): Promise<
   const results: Digest[] = []
   for (const f of files) {
     const catalyst = readFileSync(join(dir, f), 'utf8')
-    const out = await run(catalyst, { trainer: ['role'] })
+    // The prompt must actually request a digestion. role.md describes the
+    // interactive pose/demand/release loop and only *refers* to digest.md, so
+    // handing it raw catalyst with no instruction yields no [TOUCH]/[CLAIM]
+    // markers and reads as a total failure when nothing is wrong.
+    const out = await run(
+      `Read trainer/digest.md and run the digestion protocol on the catalyst below. ` +
+        `There is no user turn in this run, so skip the interactive loop entirely: ` +
+        `go straight to step 2 and do not emit [COMMIT-POINT].\n\n--- CATALYST ---\n${catalyst}`,
+      { trainer: ['role', 'digest'] },
+    )
     const d = measure(f, out)
     results.push(d)
     // Stream each result as it lands: a ten-call run that dies at nine must not
