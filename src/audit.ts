@@ -150,7 +150,7 @@ export function measure(file: string, out: string): Digest {
  * is the user's job, and an instrument that grades itself is the failure this
  * project exists to catch.
  */
-export async function bench(dir: string): Promise<Digest[]> {
+export async function bench(dir: string, onEach?: (d: Digest) => void): Promise<Digest[]> {
   const files = readdirSync(dir)
     .filter((f) => f.endsWith('.md'))
     .sort()
@@ -158,7 +158,11 @@ export async function bench(dir: string): Promise<Digest[]> {
   for (const f of files) {
     const catalyst = readFileSync(join(dir, f), 'utf8')
     const out = await run(catalyst, { trainer: ['role'] })
-    results.push(measure(f, out))
+    const d = measure(f, out)
+    results.push(d)
+    // Stream each result as it lands: a ten-call run that dies at nine must not
+    // take the first eight with it.
+    onEach?.(d)
   }
   return results
 }

@@ -182,7 +182,21 @@ switch (cmd) {
     ? console.log(`latest assimilation marked ${rest[0]}`)
     : die('no PENDING assimilation to settle'); break
   case 'atlas': atlasCmd(rest[0]); break
-  case 'bench': benchReport(await audit.bench(rest[0] ?? die('usage: palimpsest bench <dir>'))); break
+  case 'bench': {
+    const dir = rest[0] ?? die('usage: palimpsest bench <dir>')
+    process.stderr.write(`benching ${dir}\n`)
+    const results = await audit.bench(dir, (d) =>
+      // Per-input line the moment it lands, so a long run is legible while it
+      // is still going and a crash does not take the earlier results with it.
+      process.stderr.write(
+        `  ${d.converged ? 'ok  ' : 'FAIL'} ${d.file.padEnd(38)} ` +
+        `touch ${String(d.touch.length).padStart(2)} clusters ${d.clusters.size} ` +
+        `contra ${d.contradictions}${d.claims > 1 ? ` SPRAWL(${d.claims})` : ''}\n`,
+      ),
+    )
+    benchReport(results)
+    break
+  }
   case 'propagate': {
     const p = propagate(rest[0]?.split(',') ?? [], Number(rest[1] ?? 1))
     console.log(`${p.size} reachable`)
