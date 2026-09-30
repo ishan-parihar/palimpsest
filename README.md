@@ -31,7 +31,23 @@ palimpsest state                    # assimilation summary
 palimpsest settle <verdict>         # mark the last entry integrated|rejected|not-my-language
 palimpsest atlas [query]            # search the card index
 palimpsest propagate "<card>" <hops> # walk the primitive lattice
+palimpsest doctor                   # subsystem health, PASS/FAIL per line
+palimpsest trace [file|cwd]         # tool-calling chronology, one line per event
+palimpsest trajectory <file>        # golden-trajectory divergence report
 ```
+
+The last three read only. `doctor` checks each subsystem independently, prints the
+exact address or path it checked, mutates nothing, and exits nonzero if anything
+FAILs. `trace` prints the tool calls the recorder throws away — did the trainer
+reach for `read` before it spoke — with the entry index on every line so a finding
+can cite one. `trajectory` compares an actual transcript against the golden
+ordering and reports `EXPECTED <x> AT <position>, FOUND <y>` per divergence; a
+conforming transcript prints `CONFORMS`. It is nonzero on any divergence, so it
+is a gate rather than a report.
+
+The session itself runs with the advisor **forced on**: `advisor.enabled`
+defaults to false and only rpc/acp hosts inherit it, so the launcher passes
+`--advisor` rather than trusting a default.
 
 ## The one mechanic
 
@@ -45,6 +61,7 @@ instead of reality, and produces the feeling of progress without the substance.
 
 ```
 bin/palimpsest      launcher
+config/locked-down.yml  --config overlay; makes tools:[read] actually binding
 trainer/role.md     the contract — always resident
 trainer/digest.md   digestion protocol — read at runtime
 trainer/probe.md    discrimination probes — read at runtime
@@ -56,6 +73,9 @@ src/assimilate.ts   the record
 src/record.ts       transcript-to-record parser, verdict hardwired PENDING
 src/session-read.ts latest-session transcript reader (JSONL, no omp import)
 src/memory.ts       memory-wire client — persistRecord by bank + verdict tags
+src/doctor.ts       seven subsystem checks, one PASS/FAIL line each
+src/trace.ts        tool-calling chronology, entry index on every line
+src/trajectory.ts   golden ordering vs an actual transcript
 state/              assimilation.log, committed
 ```
 
@@ -69,11 +89,28 @@ The trainer/executor line is declared, not flagged. `agents/trainer.md` carries
 anything it cannot parse — a silently-misread allowlist would hand the trainer
 a full toolset while the definition still reads like a boundary.
 
-The trainer can look a card up. It cannot read a directory, run a command, write
-a file, or touch the network. "Trainer, not executor" is enforced by capability
-absence, not by asking the model to be restrained. `learn` is a write tool, so
+**The boundary is no write and no shell. It is not "no filesystem" and it is not
+"off the network."** `read` reaches a local file, a directory tree, an archive, a
+SQLite row, a PDF, and a **URL** — it dispatches to `fetch.ts` internally
+(`tools/read.ts:80`) — plus `ssh://` and internal `://` schemes. What the
+trainer cannot do is write, edit, shell out, search, or spawn a subagent: each of
+those is a separate tool and none is in the allowlist. "Trainer, not executor"
+is capability absence, not a request for restraint. `learn` is a write tool, so
 it is absent too: the trainer cannot record, and verdicts are structurally the
 user's.
+
+**`--tools=read` alone would not have been enough, and the previous version of
+this README said it was.** With an explicit tool list and no
+`restrictToolNames`, omp auto-includes `manage_skill` — a write tool that creates
+and deletes managed `SKILL.md` files — whenever `autolearn.enabled` is true
+(`tools/index.ts:687,730-731,786-790`). `restrictToolNames` is the gate that
+skips that block and omp exposes it only as an SDK option, never as a flag. So
+every spawn also passes `--config config/locked-down.yml`, an overlay pinning
+`autolearn.enabled: false` and `memory.backend: off`. Overlays merge over the
+user's own config, so the boundary does not depend on what one machine's
+`config.yml` says. `tests/launcher.test.ts` asserts the overlay and `--advisor`
+are on the built argv, and names the residual risk: this is narrower than
+`restrictToolNames`, and `docs/architecture.md` says exactly how.
 
 ## The falsifier
 

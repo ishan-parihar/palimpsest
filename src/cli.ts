@@ -4,11 +4,15 @@ import { run, sessionArgs, REPO } from './omp'
 import { append, read, settle, type Assimilation, type Verdict } from './assimilate'
 import { parse, toAssimilation, fromAssimilation, type Record as SessionRecord } from './record'
 import { readLatest } from './session-read'
+import { recordTranscript } from './record-session'
 // The bank id comes from memory.ts rather than being re-derived here: one project
 // is one memory-wire namespace, and a second derivation is a second namespace.
 import { bankFor, persistRecord } from './memory'
 import * as audit from './audit'
 import { cards, tier, propagate, primitives } from './atlas'
+import { doctor } from './doctor'
+import { trace } from './trace'
+import { trajectory } from './trajectory'
 
 const [, , cmd = 'session', ...rest] = process.argv
 
@@ -24,20 +28,26 @@ const slug = (s: string) => s.replace(/\s+/g, ' ').trim().slice(0, 80)
  * mirror, so a memory-store failure must not cost the assimilation itself -- but
  * it is reported, because a silent failure here looks exactly like a record that
  * was retained and never used.
+ *
+ * `sessionId` is the real omp session id, tagged as provenance. It used to be
+ * passed the bank name, so every row in a bank claimed one session -- a fact
+ * that reads as "this is where it came from" and is not. The one-shot paths have
+ * no omp session, so they pass the path that wrote them: `digest`, `settle`.
+ * The bank is always the project's; recordTranscript() asserts that a
+ * transcript's header agrees before this is ever called.
  */
-async function persist(r: SessionRecord, cwd: string): Promise<void> {
-  const bank = bankFor(cwd)
+async function persist(r: SessionRecord, sessionId: string): Promise<void> {
   try {
-    await persistRecord(r, { bank, sessionId: bank })
+    await persistRecord(r, { bank: bankFor(REPO), sessionId })
   } catch (e) {
     console.error(`\n--- logged, but memory-wire refused it: ${String(e).slice(0, 200)} ---`)
   }
 }
 
 /** Record one parsed transcript: flat log first, then the memory mirror. */
-async function record(r: SessionRecord, cwd: string, header: Partial<Assimilation> = {}): Promise<void> {
+async function record(r: SessionRecord, sessionId: string, header: Partial<Assimilation> = {}): Promise<void> {
   append({ ...toAssimilation(r), ...header })
-  await persist(r, cwd)
+  await persist(r, sessionId)
 }
 
 /**
@@ -45,20 +55,31 @@ async function record(r: SessionRecord, cwd: string, header: Partial<Assimilatio
  *
  * The spawn is untouched: stdio stays inherited, because piping it breaks the
  * TUI. omp persists sessions itself, so the file is the input -- which is the
- * whole reason this is a reader and not a parser of a piped stream.
+ * whole reason this is a reader and not a parser of a piped stream. Whether it
+ * may be recorded at all is record-session.ts's call: empty, already-admitted and
+ * wrong-bank transcripts each stop here with a reason instead of a line.
  */
 async function recordSession(): Promise<void> {
+  let s
   try {
-    const s = readLatest(REPO)
-    if (!s) {
-      console.error('\n--- no session transcript found: nothing was recorded ---')
-      return
-    }
-    await record(parse(s.messages), s.cwd || REPO)
-    console.error('\n--- recorded to state/assimilation.log (verdict PENDING) ---')
+    s = readLatest(REPO)
   } catch (e) {
     console.error(`\n--- session transcript unreadable: ${String(e).slice(0, 200)} ---`)
+    return
   }
+  if (!s) {
+    console.error('\n--- no session transcript found: nothing was recorded ---')
+    return
+  }
+
+  const out = await recordTranscript(s, {
+    repo: REPO,
+    append,
+    persist: (r, sessionId) => persist(r, sessionId),
+  })
+  if (out.status === 'bank-mismatch') die(out.message)
+  if (out.status === 'recorded') console.error('\n--- recorded to state/assimilation.log (verdict PENDING) ---')
+  else console.error(`\n--- ${out.message} ---`)
 }
 
 /**
@@ -94,7 +115,7 @@ async function digest(path: string): Promise<void> {
   // header, not one of the nine facts.
   const field = (k: string) => new RegExp(`^${k}:\\s*(.+)$`, 'm').exec(block)?.[1]?.trim()
 
-  await record(r, REPO, { catalyst: slug(field('catalyst') ?? path), reading: field('reading') })
+  await record(r, 'digest', { catalyst: slug(field('catalyst') ?? path), reading: field('reading') })
   console.error('\n--- recorded to state/assimilation.log (verdict PENDING) ---')
 }
 
@@ -235,7 +256,7 @@ switch (cmd) {
     // The log is the mirror; the verdict has to reach memory-wire too, or a
     // rejected claim keeps living in the store as something true.
     const latest = read().at(-1)
-    if (latest) await persist(fromAssimilation(latest), REPO)
+    if (latest) await persist(fromAssimilation(latest), 'settle')
     console.log(`latest assimilation marked ${verdict}`)
     break
   }
@@ -263,5 +284,24 @@ switch (cmd) {
     for (const [name, path] of p) console.log(`  ${name}  ${path.at(-1) ?? '(seed)'}`)
     break
   }
-  default: die(`unknown command "${cmd}"\nusage: palimpsest [session|digest|falsify|state|settle|atlas|propagate|bench]`)
+  // Additive from here down: three read-only debugging commands. They exit
+  // nonzero through process.exit rather than die(), so their exit code is a
+  // gate result rather than a usage error.
+  case 'doctor': {
+    const code = await doctor()
+    if (code) process.exit(code)
+    break
+  }
+  case 'trace': {
+    const code = trace(rest[0])
+    if (code) process.exit(code)
+    break
+  }
+  case 'trajectory': {
+    const file = rest[0] ?? die('usage: palimpsest trajectory <session-file> [digest|session]')
+    const code = trajectory(file, rest[1])
+    if (code) process.exit(code)
+    break
+  }
+  default: die(`unknown command "${cmd}"\nusage: palimpsest [session|digest|falsify|state|settle|atlas|propagate|bench|doctor|trace|trajectory]`)
 }

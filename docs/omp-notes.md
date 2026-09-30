@@ -17,7 +17,25 @@ it *is* pi. Docs live in the repo under `docs/` — `rpc.md` (42KB),
 | Need | Route | Why not the bigger one |
 |---|---|---|
 | Custom behaviour | `--append-system-prompt <file>` | Keeps the whole default harness; `--system-prompt` replaces the tool inventory and workflow rules too |
-| Restrict capability | `agents/trainer.md` (`tools: [read]`), compiled into the spawn by `src/omp.ts` | Absence, not restraint. This is the trainer/executor line, declared rather than flagged; the launcher fails loud on anything it cannot parse |
+| Restrict capability | `agents/trainer.md` (`tools: [read]`), compiled into the spawn by `src/omp.ts`, **plus** `--config config/locked-down.yml` | Absence, not restraint. The trainer/executor line, declared rather than flagged; the launcher fails loud on anything it cannot parse. The overlay is not optional — see below |
+| Force the advisor on | `--advisor` | `advisor.enabled` defaults to false and only rpc/acp inherit it; without the flag a TUI session runs with no advisor at all |
+
+**`--tools` is not a hard boundary, and this cost a red-team finding.** With an
+explicit tool list and no `restrictToolNames`, omp auto-includes `manage_skill`
+(a write tool) when `autolearn.enabled` is true — `tools/index.ts:687` opens the
+block, `:730-731` does the push, `:786-790` gates it, `:807` filters. And
+`restrictToolNames`, the flag that skips the block, is **SDK-only**
+(`sdk.ts:721`): nothing in `commands/launch-help.ts` sets it and
+`main.ts:1593-1597` maps `--tools` to `options.toolNames` alone. So the strongest
+CLI-available mitigation is the overlay, which is also confirmed by the
+`--config` note above: overlays deep-merge over global and project config, so a
+repo-committed overlay beats the user's own `config.yml` without editing it.
+
+Also verified, since the docs here used to claim otherwise: `read` **does**
+fetch URLs (`tools/read.ts:80` imports `executeReadUrl` / `fetchReadUrl` /
+`parseReadUrlTarget` from `./fetch`) and **does** read directories
+(`tools/read.ts:71` imports `buildDirectoryTree`). The trainer's boundary is no
+write and no shell, not no-network and not no-directory.
 | Determinism | `--no-rules --no-skills` | No 120 ambient skills, no inherited project discipline |
 | Atlas access | `--add-dir <atlas>` | Referenced explicitly by `role.md` rather than discovered, so the substrate is guaranteed rather than ambient |
 
@@ -87,10 +105,13 @@ which is the tool being honest rather than broken.
 Two consequences, both worth knowing before a session fails mysteriously:
 
 - **The client does not default to 8888.** `src/memory.ts` falls back to
-  `http://127.0.0.1:18899`. Override with `PALIMPSEST_MEMORY_ADDR`, or with
-  `MEMORY_WIRE_URL` — memory-wire's own variable, which its hooks and `doctor`
-  read, so setting it once points palimpsest, the hooks and `doctor` at the same
-  server.
+  `http://127.0.0.1:18899`, and the only variable it reads is
+  `PALIMPSEST_MEMORY_ADDR`. It does **not** read `MEMORY_WIRE_URL` — that one is
+  set for every memory-wire consumer on the box (its hooks, `memory-wire doctor`,
+  anything pointed at the shared `agents.db`), so honouring it let a foreign
+  export redirect where assimilation records land. A writer's address is
+  namespaced to the writer. Set `PALIMPSEST_MEMORY_ADDR` to aim palimpsest, and
+  `MEMORY_WIRE_URL` to aim memory-wire's own tools; set both to one address.
 - **`doctor` needs that variable too**, because it resolves its endpoint through
   `paths::endpoint()` and that is the same 8888 literal:
 

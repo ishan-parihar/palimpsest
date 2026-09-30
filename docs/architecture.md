@@ -48,21 +48,88 @@ model: ["@default"]
 thinkingLevel: high
 ```
 
-`tools: [read]` is the trainer/executor line. The trainer can look a card up. It
-cannot run a command, write a file, or reach the network.
+`tools: [read]` is the trainer/executor line, and the boundary is **no write, no
+shell** — not "no filesystem", not "no network":
+
+| The trainer CAN | because |
+|---|---|
+| read a local file | `read` is the allowlist |
+| read a **directory** | `read` builds a tree via `buildDirectoryTree` (tools/read.ts:71) |
+| read an archive, SQLite row, PDF, notebook | same tool, same path |
+| **fetch a URL** | `read` dispatches to `fetch.ts` — `executeReadUrl` / `fetchReadUrl` / `parseReadUrlTarget` (tools/read.ts:80) |
+| read `ssh://` and internal `://` schemes | same tool, path resolution |
+
+| The trainer CANNOT | because |
+|---|---|
+| write or edit a file | `write` / `edit` / `ast_edit` are not in the allowlist |
+| run a command | `bash` / `eval` are not in the allowlist |
+| search, glob, or grep | `grep` / `glob` / `find` are not in the allowlist |
+| spawn a subagent | `task` is not in the allowlist |
+| record to memory | `learn` / `retain` / `recall` / `reflect` / `memory_edit` are not in the allowlist |
+| mint or edit a managed skill | `manage_skill` is not in the allowlist — see the auto-include below |
+
+**`--tools=read` is not, by itself, a hard boundary — and the previous version
+of this document claimed it was.** That claim was wrong, and it was wrong in the
+direction that matters. With an explicit tool list and no `restrictToolNames`,
+omp *widens* the list before filtering it (`tools/index.ts`):
+
+```
+:687  if (requestedTools && !restrictToolNames) {      // the widening block
+:730  autolearn.enabled && taskDepth 0  ->  push "manage_skill"
+:732  ... push "learn" when the memory backend is hindsight|mnemopi|local
+:786  isToolAllowed("manage_skill") = autolearn.enabled && (top level || explicit)
+:807  const names = requestedTools.filter(... && isToolAllowed(name))
+```
+
+`manage_skill` creates, updates, and deletes managed `SKILL.md` files. A trainer
+holding it is an executor. So the mitigation:
+
+- **`restrictToolNames` is the real gate and it has no CLI flag.** It is an
+  SDK option only (`CreateAgentSessionOptions`, sdk.ts:721). The launch flag
+  table (`commands/launch-help.ts`) has nothing that sets it, and
+  `main.ts:1593-1597` maps `--tools` to `options.toolNames` and nothing else. No
+  CLI invocation, including a palimpsest one, can set it.
+- **So the launcher passes `--config config/locked-down.yml`**, an overlay that
+  pins `autolearn.enabled: false` and `memory.backend: off`. Overlays merge last,
+  over global and project config (`config/settings.ts:3722-3726`), so these hold
+  regardless of what the user's own `config.yml` says — which is the difference
+  between a guarantee and a claim about one machine. Both settings off means the
+  gates at `:730`, `:732`, `:782-785`, `:786-790`, and `:791-797` are all closed,
+  and the `:807` filter then drops the auto-included names.
+
+**Residual risk, stated rather than smoothed over.** This is not
+`restrictToolNames`; it is narrower. It closes every auto-include omp currently
+gates on autolearn or a memory backend, and nothing else could widen the list
+today (`grep`/`ast_grep` need `grep` in the list, `ast_edit` needs `edit`, `goal`
+needs an active goal mode, `think` needs external thinking, `yield` needs
+`requireYieldTool`, which is false at task depth 0). But a future auto-include
+gated on some *other* setting would widen the list again, and only an omp-side
+flag or the SDK option would stop it. `tests/launcher.test.ts` asserts the
+overlay is on the built argv, so deleting it or dropping the flag breaks the
+build instead of silently handing the trainer a write tool.
 
 **It also cannot record, and that now has two independent mechanisms.** `learn`
-is a write tool, so it is absent from the allowlist. It is also no longer
-registered at all: `~/.omp/agent/config.yml` has no `memory.backend`, so omp's
-default `off` applies and the memory tools — `retain`, `learn`, `recall`,
-`reflect`, `memory_edit` — are gated off in `tools/index.ts` before the allowlist
-is even consulted. `autolearn.enabled` is still true and does not matter; the
-`learn` gate requires both. Whichever mechanism is inspected first, the verdict
-stays the user's: not a rule the trainer could forget, a capability it lacks.
+is a write tool, so it is absent from the allowlist. It is also not registered at
+all: `memory.backend` is `off` — omp's own default, and now pinned by the
+overlay rather than inherited from whatever the user's config happens to say — so
+the memory tools are gated off in `tools/index.ts` before the allowlist is even
+consulted. Whichever mechanism is inspected first, the verdict stays the user's:
+not a rule the trainer could forget, a capability it lacks.
 
 Prompt: `trainer/role.md`, always resident.
 
 ### L2 — advisor (one, integrated)
+
+**The advisor is off by default, so the launcher has to turn it on.** The
+setting is `advisor.enabled`, `default: false`, with
+`protocolDefault: ["rpc", "acp"]` (`advisor/settings.ts:10-14`) — protocol hosts
+opt in, and a TUI session does not. An earlier version of this document
+described the advisor as always running; that was true only over rpc/acp. The
+launcher passes `--advisor`, which is an ephemeral override applied before the
+interactive host is built and is *not* gated on `isInteractive` or on protocol
+mode (`main.ts:1877-1880`), so it reaches both the TUI and the one-shot paths.
+`src/omp.ts` passes it unconditionally and `tests/launcher.test.ts` asserts its
+presence, because a defense that can be dropped by a later edit is not one.
 
 `WATCHDOG.yml`, discovered walking up from cwd, then project `.omp/`, then the
 user agent dir.
@@ -227,6 +294,7 @@ A gate that cannot fail is decoration.
 
 | Gate | Fails when |
 |---|---|
+| launcher args | `--config config/locked-down.yml` or `--advisor` leaves the built argv, or a write/execute tool is named |
 | trainer contract | a prohibition is deleted from `role.md` |
 | substrate index | counts drift from the atlas registry (801/191/256/354) |
 | lattice | a tier-1 card declares no primitive and cannot propagate |

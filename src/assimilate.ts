@@ -7,7 +7,7 @@
  * score is a progress feeling and a progress feeling is what this system exists
  * to prevent.
  */
-import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, appendFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 export const LOG = join(import.meta.dirname, '..', 'state', 'assimilation.log')
@@ -86,19 +86,49 @@ export function format(a: Assimilation): string {
 }
 
 /** Append one assimilation. The log is append-only; `settle` is the only rewrite. */
-export function append(a: Assimilation): void {
-  mkdirSync(dirname(LOG), { recursive: true })
-  appendFileSync(LOG, format(a))
+export function append(a: Assimilation, log = LOG): void {
+  mkdirSync(dirname(log), { recursive: true })
+  appendFileSync(log, format(a))
+}
+
+/**
+ * The last entry still PENDING, with its verdict line rewritten. Text in, text
+ * out; undefined when nothing is pending.
+ *
+ * Scoped to a block, never a whole-file `lastIndexOf`. A claim is free text, so
+ * any entry's text can carry the literal `- **verdict:** PENDING`; searching the
+ * file for that string settles whichever line the text last imitates -- the
+ * wrong entry, or none of them. Anchored to a whole line inside one `## ` block,
+ * the only line reachable is that block's own verdict.
+ */
+function settleText(text: string, verdict: Verdict): string | undefined {
+  const heads = [...text.matchAll(/^## /gm)]
+  for (let i = heads.length - 1; i >= 0; i--) {
+    const start = heads[i]!.index
+    const end = heads[i + 1]?.index ?? text.length
+    const body = text.slice(start, end)
+    const at = /^- \*\*verdict:\*\* PENDING[ \t]*$/m.exec(body)
+    if (!at) continue
+    return (
+      text.slice(0, start) +
+      body.slice(0, at.index) +
+      `- **verdict:** ${verdict}` +
+      body.slice(at.index + at[0].length) +
+      text.slice(end)
+    )
+  }
+  return undefined
 }
 
 /** Set the verdict on the most recent entry whose verdict is still PENDING. */
-export function settle(verdict: Verdict): boolean {
-  if (!existsSync(LOG)) return false
-  const text = readFileSync(LOG, 'utf8')
-  const marker = '- **verdict:** PENDING'
-  const idx = text.lastIndexOf(marker)
-  if (idx === -1) return false
-  const next = text.slice(0, idx) + `- **verdict:** ${verdict}` + text.slice(idx + marker.length)
-  writeFileSync(LOG, next)
+export function settle(verdict: Verdict, log = LOG): boolean {
+  if (!existsSync(log)) return false
+  const next = settleText(readFileSync(log, 'utf8'), verdict)
+  if (next === undefined) return false
+  // Temp file then rename, not an in-place rewrite: a crash or a full disk part
+  // way through would otherwise truncate the committed record of everything.
+  const tmp = `${log}.tmp`
+  writeFileSync(tmp, next)
+  renameSync(tmp, log)
   return true
 }

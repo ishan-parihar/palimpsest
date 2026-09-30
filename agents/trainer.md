@@ -8,9 +8,9 @@ thinkingLevel: high
 
 System prompt: trainer/role.md
 
-The trainer can look a card up. It cannot read a directory, run a command, write
-a file, or reach the network. That is the trainer/executor line, and it is
-capability absence rather than restraint.
+The trainer can look a card up. It cannot write a file or run a command.
+The read tool itself CAN read directories and fetch URLs, so the boundary is
+no-write-no-shell, stated precisely: capability absence rather than restraint.
 
 `learn` is a write tool, so it is absent from the allowlist. The trainer
 physically cannot write to memory — verdicts are structurally the user's, not a

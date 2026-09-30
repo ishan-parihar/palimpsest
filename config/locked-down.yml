@@ -1,0 +1,47 @@
+# Capability lock-down overlay, passed as `--config` by src/omp.ts.
+#
+# WHY THIS FILE EXISTS. `--tools=read` is not a hard boundary in omp. With an
+# explicit tool list and no `restrictToolNames`, `resolveToolNames` widens the
+# list before filtering it (packages/coding-agent/src/tools/index.ts):
+#
+#   :687  `if (requestedTools && !restrictToolNames)` opens the auto-include block
+#   :730  autolearn.enabled && taskDepth 0  ->  pushes `manage_skill`
+#   :732  ... and pushes `learn` when the memory backend is hindsight|mnemopi|local
+#   :786  isToolAllowed("manage_skill") = autolearn.enabled && (top level || explicit)
+#   :807  the final `names` filter applies isToolAllowed, so a gate that is off
+#         removes the tool even if it was auto-included
+#
+# `manage_skill` is a WRITE tool: it creates, updates, and deletes managed
+# SKILL.md files. A trainer holding it is an executor.
+#
+# `restrictToolNames` is the flag-free gate that would skip the block entirely,
+# but omp exposes it ONLY as an SDK option (CreateAgentSessionOptions, sdk.ts:721).
+# The launch flag table (commands/launch-help.ts) has no flag for it, and
+# main.ts:1593-1597 maps `--tools` to `options.toolNames` and nothing else — so
+# no CLI invocation can set it. `--config` is therefore the strongest available
+# mitigation: the overlay is merged last, over global and project config
+# (config/settings.ts:3722-3726), so these two values hold regardless of what
+# the user's own config.yml says.
+#
+# `autolearn.enabled: false`  -> the gate at :730/:786/:791 is off, so neither
+#                                `manage_skill` nor `learn` survives :807.
+# `memory.backend: off`       -> the gate at :782-785 and :795, so `retain`,
+#                                `recall`, `reflect`, and `memory_edit` are off
+#                                too. Also already omp's default
+#                                (autolearn/settings.ts:13, memory `off`), pinned
+#                                here so the guarantee does not depend on the
+#                                user's config.
+#
+# RESIDUAL RISK, stated honestly in docs/architecture.md: this closes every
+# auto-include that omp currently gates on autolearn or a memory backend. It is
+# not the same as `restrictToolNames`. Any future auto-include gated on some
+# other setting would widen the list again, and only an omp-side flag or an
+# SDK-level `restrictToolNames` would close that. tests/launcher.test.ts asserts
+# this overlay is actually on the command line, so deleting it breaks the build
+# rather than silently restoring the write tool.
+
+autolearn:
+  enabled: false
+
+memory:
+  backend: off

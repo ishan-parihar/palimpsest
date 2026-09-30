@@ -6,7 +6,7 @@
  * silently turning the trainer into a flatterer. Each one names the exact
  * failure it prevents, because "role.md changed" is not a reviewable diff.
  */
-import { test, expect } from 'bun:test'
+import { test, expect, mock } from 'bun:test'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { cards, tier, primitives, propagate } from '../src/atlas'
@@ -126,11 +126,29 @@ test('the trainer prompt is assembled into ONE file, not repeated flags', () => 
 })
 
 test('an empty transcript is a harness fault, never a pass', async () => {
-  const { withhold, contradiction, novelty } = await import('../src/audit')
-  for (const fn of [withhold, contradiction, novelty]) {
-    // Each check must distinguish "trainer said nothing" from "trainer behaved".
-    // Assert on the guard rather than on a model call.
-    expect(fn.name).toMatch(/withhold|contradiction|novelty/)
+  // The previous version of this test asserted on `fn.name` and never called a
+  // check, so deleting every empty guard in src/audit.ts left it green. It now
+  // runs the three checks against the one input that is indistinguishable from
+  // success without a guard. `run` is stubbed, so this is the guard's own
+  // deterministic string analysis -- no model call, because a gate that needs a
+  // model to prove the harness is broken is not a gate.
+  const real = await import('../src/omp')
+  mock.module('../src/omp', () => ({ ...real, run: async () => '' }))
+  try {
+    const { withhold, contradiction, novelty } = await import('../src/audit')
+    for (const fn of [withhold, contradiction, novelty]) {
+      const check = await fn()
+      // Both halves are load-bearing, and the second one is the one that was
+      // missing. `pass: false` alone proves nothing about the guard: withhold
+      // and novelty already fail on empty output for ordinary reasons. Only the
+      // evidence names the guard, and without it each check reports the trainer
+      // as misbehaving when the harness is what actually broke.
+      expect(check.pass).toBe(false)
+      expect(check.evidence).toMatch(/EMPTY TRANSCRIPT/)
+    }
+  } finally {
+    // Undo it, so a mocked-away `run` cannot leak into another test file.
+    mock.module('../src/omp', () => real)
   }
 })
 

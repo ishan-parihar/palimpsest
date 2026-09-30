@@ -1,22 +1,37 @@
 /**
  * omp invocation.
  *
- * Two deliberate restrictions, both load-bearing:
+ * Three deliberate restrictions, all load-bearing:
  *   agents/trainer.md   the trainer/executor line is DECLARED, not flagged. Its
  *                       `tools: [read]` allowlist is the source of truth and
- *                       sessionArgs() derives `--tools` from it. The trainer can
- *                       look a card up; it cannot read a directory, run a
- *                       command, write a file, or reach the network. Absence,
- *                       not restraint.
+ *                       sessionArgs() derives `--tools` from it. What that
+ *                       actually buys, precisely: the trainer can read a local
+ *                       file, a directory tree, an archive, and a URL. It cannot
+ *                       write, edit, shell out, search, or spawn a subagent —
+ *                       every one of those is a different tool and none of them
+ *                       is in the list. Absence, not restraint.
+ *   --config LOCKDOWN   `--tools` alone is NOT a hard boundary. With an explicit
+ *                       list and no `restrictToolNames`, omp auto-includes
+ *                       `manage_skill` — a WRITE tool — when
+ *                       `autolearn.enabled` is true (tools/index.ts:687,730-731,
+ *                       786-790). `restrictToolNames` has no CLI flag, so the
+ *                       strongest available mitigation is the config overlay,
+ *                       which merges over the user's own config and turns the
+ *                       gate off. See config/locked-down.yml.
  *   --no-rules --no-skills
  *                       no inherited project discipline, no 120 ambient skills.
  *                       The trainer's only instructions are the ones in trainer/.
  *
+ * --advisor is passed unconditionally because `advisor.enabled` defaults to
+ * false and only protocol hosts (rpc/acp) opt in by default
+ * (advisor/settings.ts:10-14). The flag is applied before the interactive host
+ * is built (main.ts:1877-1880) and is not gated on isInteractive, so it reaches
+ * the TUI launch and not just one-shot.
+ *
  * omp has no flag for routing the top-level session through an agent definition
  * (verified against the launch flag table: definitions are discovered for the
  * `task` subagent system only, from `.omp/agents/` and the user agents dir). So
- * the launcher compiles the definition into the spawn. The one-shot paths in
- * run() keep passing the flags directly and are deliberately left alone.
+ * the launcher compiles the definition into the spawn.
  */
 import { spawn } from 'node:child_process'
 import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs'
@@ -25,6 +40,16 @@ import { join } from 'node:path'
 
 export const REPO = import.meta.dirname + '/..'
 export const ATLAS = process.env.PALIMPSEST_ATLAS ?? `${process.env.HOME}/.agents/skills/mental-model-atlas`
+
+/**
+ * The `--config` overlay that makes the tool allowlist actually binding.
+ * Merged over global + project config (omp config/settings.ts:3722-3726), so it
+ * wins over the user's own settings. Never pass an allowlist without it.
+ */
+export const LOCKDOWN = join(REPO, 'config', 'locked-down.yml')
+
+/** Restrictions that apply to every spawn, interactive or one-shot. */
+const HARDENING = ['--config', LOCKDOWN, '--advisor']
 
 /** The declarative trainer: capabilities, model, thinking level, prompt. */
 export const AGENT = join(REPO, 'agents', 'trainer.md')
@@ -104,6 +129,7 @@ export function sessionArgs(extra: string[] = []): string[] {
   const a = trainerAgent()
   return [
     '--no-rules', '--no-skills',
+    ...HARDENING,
     `--tools=${a.tools.join(',')}`,
     '--cwd', REPO,
     '--add-dir', ATLAS,
@@ -145,18 +171,31 @@ export function mergedTrainer(files: string[]): string {
   return out
 }
 
-export function run(prompt: string, opts: RunOpts): Promise<string> {
-  const args = [
+/**
+ * The one-shot command, as an argv list.
+ *
+ * Split out of run() so the hardening flags are assertable without spawning a
+ * model call. A guarantee that can only be checked by running the thing is not
+ * a guarantee — the red-team finding was that the previous shape had no such
+ * seam, so the allowlist and the auto-include were both unchecked in CI.
+ */
+export function runArgs(prompt: string, opts: RunOpts): string[] {
+  return [
     '-p',
     '--mode=text',
     '--no-rules',
     '--no-skills',
+    ...HARDENING,
     '--tools=read',
     '--cwd', opts.cwd ?? REPO,
     '--add-dir', ATLAS,
     '--append-system-prompt', mergedTrainer(opts.trainer),
     prompt,
   ]
+}
+
+export function run(prompt: string, opts: RunOpts): Promise<string> {
+  const args = runArgs(prompt, opts)
 
   return new Promise((resolve, reject) => {
     const child = spawn('omp', args, { stdio: ['ignore', 'pipe', 'pipe'] })

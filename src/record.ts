@@ -27,6 +27,14 @@
  * nobody. The verdict is structurally the user's, so a transcript that tries to
  * assign itself one is ignored rather than trusted -- `assimilate.settle` is the
  * only writer.
+ *
+ * Everything else the block says is trainer-controlled text of unknown quality,
+ * so it is checked rather than believed. A date is validated as a real
+ * `YYYY-MM-DD`; a second `[CLAIM]` is a truncation, not a supersession, so it is
+ * announced; and a list entry shaped like a record field label is not a list
+ * entry. Each refusal warns on stderr, because the alternative -- quietly
+ * storing a plausible-looking falsehood in the substrate -- is the failure this
+ * layer exists to prevent.
  */
 import type { Assimilation, Verdict } from './assimilate'
 
@@ -56,6 +64,11 @@ export type Record = {
   propagated: string[]
 }
 
+/** Every refusal here is a case the record cannot honestly hold; say so out loud. */
+const warn = (msg: string): void => {
+  process.stderr.write(`palimpsest: ${msg}\n`)
+}
+
 /** Every body of `[NAME]`, in order. */
 function blocks(text: string, name: string): string[] {
   return [...text.matchAll(new RegExp(`\\[${name}\\]([\\s\\S]*?)(?=\\n\\[|$)`, 'g'))].map(
@@ -65,8 +78,23 @@ function blocks(text: string, name: string): string[] {
 
 /** One body of `[NAME]`, the first one. */
 function one(text: string, name: string): string | undefined {
-  return blocks(text, name)[0]?.trim() || undefined
+  const all = blocks(text, name)
+  if (all.length > 1) {
+    // A record carries one field per marker, so a second [CLAIM] has nowhere to
+    // go: it is dropped, not merged and not stored. Nothing here retracts it --
+    // there is no retraction verb in a transcript -- so this is a loud
+    // truncation rather than a correction, and the warning is the only record
+    // that it happened.
+    warn(`${all.length} [${name}] blocks in one transcript; keeping the first, discarding ${all.length - 1}`)
+  }
+  return all[0]?.trim() || undefined
 }
+
+/**
+ * A `key: value` label, e.g. `withheld:`. Single lowercase word, no space, so it
+ * matches the shape of a record field and nothing a framework name looks like.
+ */
+const FIELD_LABEL = /^[a-z-]+:/
 
 /** `[NAME]` bodies as entries: one per line, bullet stripped. */
 function list(text: string, name: string): string[] {
@@ -75,6 +103,14 @@ function list(text: string, name: string): string[] {
     .split('\n')
     .map((l) => l.replace(/^[-*\d.\s]+/, '').trim())
     .filter(Boolean)
+    .filter((entry) => {
+      // `[TOUCH]\n- withheld: the real reason` is a trainer trying to populate
+      // another field through the one field it was given, and it would land in
+      // `fired` as a second copy of a `withheld` reason. Dropped, not trusted.
+      if (!FIELD_LABEL.test(entry)) return true
+      warn(`dropped ${JSON.stringify(entry)} from [${name}]: shaped like a record field label, not a list entry`)
+      return false
+    })
 }
 
 const isUser = (role: string) => role === 'user' || role === 'human'
@@ -94,14 +130,54 @@ function fieldList(block: string, key: string): string[] {
   )
 }
 
+/**
+ * A real `YYYY-MM-DD`, in a year a record can plausibly carry.
+ *
+ * The trainer writes this line itself and nothing here re-derives it, so it is
+ * unverified input: `garbage`, `2026-02-30` and `1999-01-01` are all writable and
+ * all wrong in ways the flat log cannot repair, because a record dated outside
+ * the range this project covers sorts wrong forever. The window is deliberately
+ * narrower than the regex: 2000..2099 rejects both a typo'd year and a date
+ * projected into the next century.
+ */
+function realDate(s: string | undefined): string | undefined {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s ?? '')
+  if (!m) return undefined
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])]
+  if (y < 2000 || y > 2099) return undefined
+  // Round-trip through UTC: Date.UTC(2026, 1, 30) is 2 March, and only a
+  // date that survives the round trip is a date that existed.
+  const dt = new Date(Date.UTC(y, mo - 1, d))
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return undefined
+  return s
+}
+
+/**
+ * The assistant's text for marker scanning, accumulated across turns.
+ *
+ * Nothing in a transcript promises a marker is emitted inside one turn, and a
+ * trainer whose output is cut at a token boundary writes `[CLA` and then `IM]` as
+ * two turns -- which the plain newline join turned into a marker that matched
+ * nothing, so the claim silently vanished. The boundary is therefore glued only
+ * when it lands *inside* a marker token; every other boundary keeps a newline, so
+ * blocks stay line-anchored and a marker in the next turn can still terminate the
+ * block before it. Nothing is attributed to a turn here -- a record is
+ * per-session, and turn ordering belongs to `trajectory`.
+ */
+function assistantText(messages: TranscriptMessage[]): string {
+  let out = ''
+  for (const m of messages) {
+    if (!isAssistant(m.role)) continue
+    if (out && /[\[A-Z-]$/.test(out) && /^[\][A-Z-]/.test(m.text)) out += m.text
+    else out += out ? `\n\n${m.text}` : m.text
+  }
+  return out
+}
+
 /** Parse one session transcript into the record schema. */
 export function parse(messages: TranscriptMessage[]): Record {
   const said = messages.filter((m) => isUser(m.role)).map((m) => m.text.replace(/\s+/g, ' ').trim())
-  // Joined, so a marker split across two assistant turns still parses.
-  const out = messages
-    .filter((m) => isAssistant(m.role))
-    .map((m) => m.text)
-    .join('\n\n')
+  const out = assistantText(messages)
   const block = blocks(out, 'ASSIMILATION')[0] ?? ''
 
   const pick = (key: string, marker: string) => {
@@ -110,8 +186,15 @@ export function parse(messages: TranscriptMessage[]): Record {
   }
   const pickOne = (key: string, marker: string) => field(block, key) ?? one(out, marker)
 
+  const today = new Date().toISOString().slice(0, 10)
+  const rawDate = field(block, 'date')
+  const date = realDate(rawDate)
+  if (rawDate !== undefined && date === undefined) {
+    warn(`[ASSIMILATION] date ${JSON.stringify(rawDate)} is not a real YYYY-MM-DD date; using ${today}`)
+  }
+
   return {
-    date: field(block, 'date') ?? new Date().toISOString().slice(0, 10),
+    date: date ?? today,
     brought: said.find(Boolean) ?? '',
     fired: pick('touch', 'TOUCH'),
     withheld: pick('withheld', 'WITHHELD'),

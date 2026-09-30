@@ -81,7 +81,7 @@ export type Session = {
 /** The turns record.ts accepts. Everything else in a session is plumbing. */
 const CONVERSATION = new Set(['user', 'human', 'assistant', 'model'])
 
-type Block = { type?: string; text?: string }
+type Block = { type?: string; text?: string; name?: string; arguments?: unknown }
 
 function textOf(message: { content?: unknown }): string {
   if (typeof message.content === 'string') return message.content
@@ -92,52 +92,147 @@ function textOf(message: { content?: unknown }): string {
     .join('\n')
 }
 
+/** A toolCall block, with its arguments as one comparable string. */
+const toolCallsOf = (message: { content?: unknown }): { name: string; arguments: string }[] =>
+  Array.isArray(message.content)
+    ? (message.content as Block[])
+        .filter((b) => b?.type === 'toolCall')
+        .map((b) => ({ name: String(b.name ?? '?'), arguments: JSON.stringify(b.arguments) ?? '' }))
+    : []
+
+/** toolResult markers on this turn. A bare `toolResult` role counts as one. */
+function toolResultsOf(message: { content?: unknown }, role: string): number {
+  const blocks = Array.isArray(message.content)
+    ? ((message.content as Block[]).filter((b) => b?.type === 'toolResult').length ?? 0)
+    : 0
+  return blocks || (role === 'toolResult' ? 1 : 0)
+}
+
+const stampOf = (iso: unknown, epoch: unknown): string =>
+  typeof iso === 'string' && iso ? iso : typeof epoch === 'number' ? new Date(epoch).toISOString() : '?'
+
+
+/** Every `type: "message"` entry, in file order -- including the ones the record drops. */
+export type SessionEvent = {
+  /** 0-based index among message entries, so a finding can cite the line it came from. */
+  index: number
+  /** Entry timestamp when written, else the message's epoch millis as ISO. */
+  timestamp: string
+  /** The raw role. camelCase: `toolResult`, never `tool_result`. */
+  role: string
+  /** Text blocks joined, exactly as record.ts would see them. */
+  text: string
+  /** toolCall content blocks, in order. A toolCall is a block, never a role. */
+  toolCalls: { name: string; arguments: string }[]
+  /** toolResult markers this turn carried. */
+  toolResults: number
+}
+
+/** One whole transcript, parsed. `unparseable` is reported, never fatal. */
+export type SessionEvents = {
+  file: string
+  cwd: string
+  sessionId: string
+  events: SessionEvent[]
+  /** Lines that would not parse: a session is appended to while we read it. */
+  unparseable: number
+  /** Every line in the file, blanks included. */
+  lines: number
+}
+
 /**
- * The most recently created session transcript for `cwd`, or undefined.
+ * The most recent non-advisor transcript in `cwd`'s bucket, or undefined.
  *
  * "Latest" is the newest filename, and that is exact rather than a heuristic:
  * omp names a file `<fileSafeTimestamp>_<id>.jsonl` -- an ISO timestamp with
  * `:` and `.` swapped for `-` -- so lexicographic order is chronological order.
  * mtime would also work here and would be wrong for a resumed session, which
  * rewrites an old file in place.
+ */
+export function latestFile(cwd: string): string | undefined {
+  const dir = join(sessionsRoot(), sessionSlug(cwd))
+  if (!existsSync(dir)) return undefined
+  const file = readdirSync(dir)
+    .filter((n) => n.endsWith('.jsonl') && !isAdvisor(n))
+    .sort()
+    .at(-1)
+  return file ? join(dir, file) : undefined
+}
+
+/**
+ * The one JSONL parser. Everything that reads a session transcript comes through
+ * here, so the format facts above are documented once and cannot drift between
+ * the recorder and the debuggers.
  *
  * ponytail: every `type: "message"` entry is taken in file order, so a session
  * that branched (`/tree`, moving a leaf pointer instead of mutating entries)
  * reads as both branches. Rebuild the leaf chain if branching sessions matter.
  */
-export function readLatest(cwd: string): Session | undefined {
-  const dir = join(sessionsRoot(), sessionSlug(cwd))
-  if (!existsSync(dir)) return undefined
+export function readEvents(file: string): SessionEvents | undefined {
+  if (!existsSync(file)) return undefined
+  const out: SessionEvents = { file, cwd: '', sessionId: '', events: [], unparseable: 0, lines: 0 }
+  const raw = readFileSync(file, 'utf8').split('\n')
 
-  const file = readdirSync(dir)
-    .filter((n) => n.endsWith('.jsonl') && !isAdvisor(n))
-    .sort()
-    .at(-1)
-  if (!file) return undefined
-
-  const session: Session = { file: join(dir, file), cwd: '', sessionId: '', messages: [] }
-  for (const line of readFileSync(session.file, 'utf8').split('\n')) {
+  for (const [n, line] of raw.entries()) {
     if (!line.trim()) continue
+    out.lines = n + 1
     // A session is being appended to while we read it, so the last line can be
     // half-written. Skipping an unparseable line beats refusing the transcript.
-    let entry: { type?: string; cwd?: string; id?: string; message?: { role?: string; content?: unknown } }
+    let entry: {
+      type?: string
+      cwd?: string
+      id?: string
+      timestamp?: string
+      message?: { role?: string; content?: unknown; timestamp?: number }
+    }
     try {
       entry = JSON.parse(line)
     } catch {
+      out.unparseable++
       continue
     }
     if (entry.type === 'session') {
-      session.cwd = entry.cwd ?? ''
-      session.sessionId = entry.id ?? ''
+      out.cwd = entry.cwd ?? ''
+      out.sessionId = entry.id ?? ''
       continue
     }
     if (entry.type !== 'message') continue
     const role = entry.message?.role
-    if (!role || !CONVERSATION.has(role)) continue
-    const text = textOf(entry.message ?? {})
-    if (text.trim()) session.messages.push({ role, text })
+    if (!role) continue
+    const message = entry.message ?? {}
+    out.events.push({
+      index: out.events.length,
+      timestamp: stampOf(entry.timestamp, message.timestamp),
+      role,
+      text: textOf(message),
+      toolCalls: toolCallsOf(message),
+      toolResults: toolResultsOf(message, role),
+    })
   }
-  return session
+  return out
+}
+
+/** The parsed transcript for `cwd`'s newest session, or undefined. */
+export function latestEvents(cwd: string): SessionEvents | undefined {
+  const file = latestFile(cwd)
+  return file ? readEvents(file) : undefined
+}
+
+/**
+ * The session the record is built from: the newest transcript, filtered to the
+ * turns record.ts accepts. Everything else in a session is plumbing.
+ */
+export function readLatest(cwd: string): Session | undefined {
+  const read = latestEvents(cwd)
+  if (!read) return undefined
+  return {
+    file: read.file,
+    cwd: read.cwd,
+    sessionId: read.sessionId,
+    messages: read.events
+      .filter((e) => CONVERSATION.has(e.role) && e.text.trim())
+      .map((e) => ({ role: e.role, text: e.text })),
+  }
 }
 
 /** The latest session's conversation turns, in order. Empty when there is none. */

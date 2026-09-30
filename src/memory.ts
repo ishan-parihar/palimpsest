@@ -92,12 +92,19 @@ export type RecallHit = {
 /**
  * Where the server is, resolved per call so a test can redirect it.
  *
- * `PALIMPSEST_MEMORY_ADDR` is ours and wins. `MEMORY_WIRE_URL` is memory-wire's
- * own variable -- the same one its hooks and `doctor` read -- so setting it once
- * points palimpsest, the hooks and `doctor` at the same server. Then the default.
+ * Exactly one variable, then the default. `MEMORY_WIRE_URL` -- memory-wire's own
+ * variable, the one its hooks and `memory-wire doctor` read -- is deliberately
+ * NOT in this chain. It was, and it was a bank hijack rather than a convenience:
+ * that variable is set for every memory-wire consumer on the box, including
+ * `agents.db` pointing at the shared store, so honouring it let anything that
+ * exported it redirect where assimilation records are written, with no
+ * palimpsest-side declaration and nothing in the record noting the bank had
+ * moved. A writer's address is the one setting that must be namespaced to the
+ * writer. `MEMORY_WIRE_URL` still reaches memory-wire's own tools; to aim those
+ * and palimpsest at one server, set both variables.
  */
 export function baseUrl(): string {
-  const addr = process.env.PALIMPSEST_MEMORY_ADDR?.trim() || process.env.MEMORY_WIRE_URL?.trim() || DEFAULT_ADDR
+  const addr = process.env.PALIMPSEST_MEMORY_ADDR?.trim() || DEFAULT_ADDR
   return addr.replace(/\/+$/, '')
 }
 
