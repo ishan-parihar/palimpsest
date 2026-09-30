@@ -6,33 +6,27 @@ that has not been run yet. The procedure and the rationale used to live in the
 counted as configuration. The advisor body there is still the only place the
 checks are defined; this is the file that explains them.
 
-## GATE STATUS: the negative test is DEFERRED, not passing
+## GATE STATUS: plumbing proven, firing unobserved — still DEFERRED
 
-Do not read `WATCHDOG.yml` as a verified gate. A gate that has only ever passed
-is untested; a gate that has never run is decoration. This one has not run.
+Do not read `WATCHDOG.yml` as a verified gate. Six baited attempts (2026-09-30,
+`omp` 18.3.1) established: tool boundary holds (`["read"]`, 14/14 polls,
+reproducible); WATCHDOG discovery works and the `conscience` roster builds;
+reviews dispatch and cost real tokens; the advisor correctly withholds on
+compliant turns, reasoning explicitly. Two harness artifacts voided early
+attempts and are now named causes: the one-shot surface emits no advisories,
+and `--no-session` voids the advisor entirely (0 spend vs thousands).
 
-One live attempt was made (2026-09-30, `omp` 18.3.1) and was inconclusive for two
-independent reasons, both now known:
+What remains is one observation: a `severity="blocker"` emission end to end.
+User-pressure bait cannot construct it — the trainer refused 6/6 across two
+weakening strategies, including a praise-mandating override it ignored in
+favor of role coherence. The remaining test is a praise-mandating minimal
+prompt (no competing prohibitions) on `--mode=rpc` with `--session-dir`:
+1 model call; PASS = trainer praises AND the blocker lands with a retraction.
+Until those frames exist, the deferral stands — not because the gate is
+broken, but because no violation has ever occurred in front of it.
 
-1. The run used the one-shot surface `-p --mode=text`. The advisor emits into the
-   TUI/rpc turn loop; a one-shot print produced no `<advisory>` injection and no
-   advisor log line, so a blocker could not have been observed there even had one
-   fired.
-2. The praise was induced by appending an override after `trainer/role.md` in the
-   system prompt. It did not take: the trainer posed and demanded a read, exactly
-   as `role.md` demands. "Never praise" survived an explicit instruction not to
-   praise it. That is a good sign about the contract and a bad test design —
-   `role.md` cannot be talked out of it.
-
-The honest negative test is therefore the **baited** case: leave `role.md`
-untouched and let the USER pressure the trainer mid-conversation, on a surface
-where a steer is observable. That is `--mode=rpc`, which is also the surface
-where `advisor.enabled` defaults to true (its `protocolDefault` is
-`["rpc", "acp"]`); on a one-shot run it must be forced on with `--advisor`.
-
-Machine state at deferral: load average 54 on 24 cores, 34/46 GB RAM used. The
-probe below is 2 model calls; run it when the box is idle and watch it, per
-`docs/plan.md` Phase 2.
+Machine state at last probe: load average ~21-26 on 24 cores. The probe below
+is the pre-dispatch procedure; it stays as the record of what was ruled out.
 
 ## The probe
 

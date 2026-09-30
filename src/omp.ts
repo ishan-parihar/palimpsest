@@ -81,7 +81,9 @@ export const LOCKDOWN = join(REPO, 'config', 'locked-down.yml')
  * `--no-extensions` is in this list, not in the overlay, because extension
  * discovery is not a settings key: it is a launch flag whose only effect is
  * `options.disableExtensionDiscovery` (main.ts:1641-1643). Leaving it out is
- * what let a plugin's `bash`/`write`/`edit` into the roster.
+ * what let a plugin's `bash`/`write`/`edit` into the roster. Honest limit:
+ * extension *UI* frames (e.g. autoresearch setWidget) can still arrive — what
+ * the flag provably stops is tool *registration*, verified via rpc dumpTools.
  */
 const HARDENING = ['--config', LOCKDOWN, '--no-extensions', '--advisor']
 
