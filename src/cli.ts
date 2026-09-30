@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { run, sessionArgs, REPO } from './omp'
 import { append, read, settle, type Assimilation, type Verdict } from './assimilate'
-import { parse, toAssimilation, fromAssimilation, type Record as SessionRecord } from './record'
+import { parse, field, toAssimilation, fromAssimilation, type Record as SessionRecord } from './record'
 import { readLatest } from './session-read'
 import { recordTranscript } from './record-session'
 // The bank id comes from memory.ts rather than being re-derived here: one project
@@ -21,6 +21,12 @@ const die = (m: string): never => {
   process.exit(1)
 }
 
+/**
+ * Header length for a one-shot digest's catalyst: a whole document is a poor
+ * `## <date> · <x>` header, so it is cut. NOT the same rule as assimilate's
+ * line-collapse -- a session's `brought` is the user's first turn and is written
+ * whole, and one shared cap would truncate it in the committed log.
+ */
 const slug = (s: string) => s.replace(/\s+/g, ' ').trim().slice(0, 80)
 
 /**
@@ -112,10 +118,8 @@ async function digest(path: string): Promise<void> {
   // rather than being written empty.
   const r = parse([{ role: 'user', text: catalyst }, { role: 'assistant', text: out }])
   // The two fields the record schema does not model stay here: they are log
-  // header, not one of the nine facts.
-  const field = (k: string) => new RegExp(`^${k}:\\s*(.+)$`, 'm').exec(block)?.[1]?.trim()
-
-  await record(r, 'digest', { catalyst: slug(field('catalyst') ?? path), reading: field('reading') })
+  // header, not one of the nine facts. record.ts owns the block-field regex.
+  await record(r, 'digest', { catalyst: slug(field(block, 'catalyst') ?? path), reading: field(block, 'reading') })
   console.error('\n--- recorded to state/assimilation.log (verdict PENDING) ---')
 }
 
@@ -126,12 +130,17 @@ function state(): void {
   console.log(`  integrated: ${by('integrated')}  rejected: ${by('rejected')}  ` +
     `not-my-language: ${by('not-my-language')}  pending: ${by('PENDING')}`)
 
+  // A ratio over an empty log is not a measurement. `0/0` reads as a finding and
+  // `0/33` reads as "nothing has exercised a primitive" -- both claims made from
+  // zero observations, which is the failure this whole repo is built against. The
+  // em-dash is the honest print, and it is the same fact as exit code 3.
+  const UNMEASURED = '— (nothing assimilated yet)'
   const withCon = log.filter((a) => a.contradiction && a.contradiction !== 'none')
-  console.log(`  found a real contradiction: ${withCon.length}/${log.length}`)
+  console.log(`  found a real contradiction: ${log.length ? `${withCon.length}/${log.length}` : UNMEASURED}`)
 
   // Which primitives have actually done work, versus which are still inert.
   const used = new Set(log.flatMap((a) => a.propagated ?? []))
-  console.log(`  primitives exercised: ${used.size}/${primitives().length}`)
+  console.log(`  primitives exercised: ${log.length ? `${used.size}/${primitives().length}` : UNMEASURED}`)
 
   const latest = log.at(-1)
   if (latest) {
@@ -184,7 +193,10 @@ async function falsify(only?: string): Promise<void> {
   for (const r of results) console.log(`${r.pass ? 'PASS' : 'FAIL'}  ${r.name.padEnd(14)} ${r.evidence}`)
   const failed = results.filter((r) => !r.pass)
   console.log(failed.length ? `\n${failed.length} FAILED` : '\nall mechanical checks passed')
-  if (failed.length) process.exit(2)
+  // 1, not 2: a FAILED check is a finding, and the exit-code table documented in
+  // trace.ts reserves 2 for a harness fault. Leaving 2 here would make the two
+  // most different outcomes of this command indistinguishable to a caller.
+  if (failed.length) process.exit(1)
 }
 
 /**
@@ -298,7 +310,7 @@ switch (cmd) {
     break
   }
   case 'trajectory': {
-    const file = rest[0] ?? die('usage: palimpsest trajectory <session-file> [digest|session]')
+    const file = rest[0] ?? die('usage: palimpsest trajectory <session-file> [digest|session|bench]')
     const code = trajectory(file, rest[1])
     if (code) process.exit(code)
     break

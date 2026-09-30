@@ -45,7 +45,7 @@ when it produces a better-looking answer.
 ## Commands
 
 ```bash
-bun test                     # 14 assertions, all of which can fail
+bun test                     # every assertion can fail
 palimpsest falsify all       # the acceptance gate; costs 3 model calls
 palimpsest atlas             # 801 cards, 33 primitives, 39 families
 ```

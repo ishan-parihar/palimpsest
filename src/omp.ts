@@ -1,26 +1,53 @@
 /**
  * omp invocation.
  *
- * Three deliberate restrictions, all load-bearing:
- *   agents/trainer.md   the trainer/executor line is DECLARED, not flagged. Its
- *                       `tools: [read]` allowlist is the source of truth and
- *                       sessionArgs() derives `--tools` from it. What that
- *                       actually buys, precisely: the trainer can read a local
- *                       file, a directory tree, an archive, and a URL. It cannot
- *                       write, edit, shell out, search, or spawn a subagent —
- *                       every one of those is a different tool and none of them
- *                       is in the list. Absence, not restraint.
- *   --config LOCKDOWN   `--tools` alone is NOT a hard boundary. With an explicit
- *                       list and no `restrictToolNames`, omp auto-includes
- *                       `manage_skill` — a WRITE tool — when
- *                       `autolearn.enabled` is true (tools/index.ts:687,730-731,
- *                       786-790). `restrictToolNames` has no CLI flag, so the
- *                       strongest available mitigation is the config overlay,
- *                       which merges over the user's own config and turns the
- *                       gate off. See config/locked-down.yml.
+ * The trainer/executor boundary is capability absence, and it took three
+ * separate mechanisms to actually get there. `--tools=read` alone is NOT a
+ * boundary, and neither is `--tools=read` plus an overlay that only closes
+ * omp's auto-include: an rpc `get_state` probe (zero model calls) with exactly
+ * that configuration offered the trainer **103 tools, 99 of them
+ * state-mutating** — `bash`, `write`, `edit`, and every `mcp__*` tool including
+ * `mcp__memory_wire_memory_retain`, so the trainer could record. The three
+ * leaks, each attributed by an A/B probe and each closed here:
+ *
+ *   agents/trainer.md   DECLARED, not flagged. Its `tools: [read]` allowlist is
+ *                       the source of truth and sessionArgs() derives `--tools`
+ *                       from it. What that buys, precisely: the trainer can read
+ *                       a local file, a directory tree, an archive, and a URL.
+ *                       It cannot write, edit, shell out, search, or spawn a
+ *                       subagent — every one of those is a different tool and
+ *                       none of them is in the list. Absence, not restraint.
+ *   --no-extensions     LEAK 1. `--no-rules`/`--no-skills` do not disable
+ *                       extension loading, and the installed omp-plugin shipped
+ *                       its own `bash`, `write`, `edit`, `bash_*`, and `aft_*`
+ *                       tools — registered via `registerTool`, entirely outside
+ *                       the `resolveBuiltinToolPlan` allowlist, so no `--tools`
+ *                       value could have excluded them. This flag is the only
+ *                       control: main.ts:1641-1643 sets
+ *                       `options.disableExtensionDiscovery`, which puts
+ *                       extension roots in `explicit-only` mode
+ *                       (omp-extension-roots.ts:274-278).
+ *   --config LOCKDOWN   LEAKS 2 and 3, plus the auto-include. The overlay pins
+ *                       `mcp.enableProjectConfig: false` +
+ *                       `disabledProviders` (the user's own
+ *                       `~/.omp/agent/mcp.json` is user-level and survives the
+ *                       project switch alone — measured at 88 tools), sets
+ *                       `tools.xdev: false` (which removes the device-only
+ *                       `write` that transports `write xd://<tool>`), and turns
+ *                       off the autolearn/memory gates behind `manage_skill` and
+ *                       `learn`. It merges over the user's own config, so it
+ *                       holds regardless of what their config.yml says.
  *   --no-rules --no-skills
  *                       no inherited project discipline, no 120 ambient skills.
  *                       The trainer's only instructions are the ones in trainer/.
+ *
+ * `restrictToolNames` is the one gate that would make all of the above
+ * unnecessary — it also sets `enableMCP = false` (sdk.ts:2371) — but it is
+ * SDK-only (`CreateAgentSessionOptions`, sdk.ts:721). The launch flag table
+ * (commands/launch-help.ts) has no flag for it, and main.ts:1593-1597 maps
+ * `--tools` to `options.toolNames` and nothing else, so no CLI invocation can
+ * reach it. This is a mitigation, not the gate. See config/locked-down.yml for
+ * the residual risk.
  *
  * --advisor is passed unconditionally because `advisor.enabled` defaults to
  * false and only protocol hosts (rpc/acp) opt in by default
@@ -48,8 +75,15 @@ export const ATLAS = process.env.PALIMPSEST_ATLAS ?? `${process.env.HOME}/.agent
  */
 export const LOCKDOWN = join(REPO, 'config', 'locked-down.yml')
 
-/** Restrictions that apply to every spawn, interactive or one-shot. */
-const HARDENING = ['--config', LOCKDOWN, '--advisor']
+/**
+ * Restrictions that apply to every spawn, interactive or one-shot.
+ *
+ * `--no-extensions` is in this list, not in the overlay, because extension
+ * discovery is not a settings key: it is a launch flag whose only effect is
+ * `options.disableExtensionDiscovery` (main.ts:1641-1643). Leaving it out is
+ * what let a plugin's `bash`/`write`/`edit` into the roster.
+ */
+const HARDENING = ['--config', LOCKDOWN, '--no-extensions', '--advisor']
 
 /** The declarative trainer: capabilities, model, thinking level, prompt. */
 export const AGENT = join(REPO, 'agents', 'trainer.md')
@@ -147,7 +181,7 @@ export type RunOpts = {
   cwd?: string
 }
 
-export function trainerPath(name: string): string {
+function trainerPath(name: string): string {
   return `${REPO}/trainer/${name}.md`
 }
 

@@ -11,7 +11,7 @@ import { test, expect, afterAll } from 'bun:test'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { append, parseBlock, settle, type Assimilation } from '../src/assimilate'
+import { append, parseBlock, read, settle, type Assimilation } from '../src/assimilate'
 import { bankFor } from '../src/memory'
 import { REPO } from '../src/omp'
 import { consumed, recordTranscript, LEDGER, type ConsumeEntry } from '../src/record-session'
@@ -38,6 +38,32 @@ The unfinished projects are not a discipline problem; the finish line was never 
 
 [FALSIFIER]
 Two projects shipped this quarter without anyone being asked to.`
+
+test('state prints no ratio it cannot compute', async () => {
+  // The read-only summary of the committed log, so it is asserted through the
+  // CLI -- importing `cli.ts` would run its command switch and spawn omp. The log
+  // is only ever READ here, never written.
+  const proc = Bun.spawn(['bun', join(import.meta.dirname, '..', 'bin', 'palimpsest'), 'state'], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  const out = await new Response(proc.stdout).text()
+  expect(await proc.exited).toBe(0)
+
+  // `0/0` reads as a finding and `0/33` reads as "nothing has exercised a
+  // primitive" -- both claimed from zero observations. The denominator invariant
+  // holds whatever the log holds, so it bites on an empty log and a full one.
+  expect(out).not.toMatch(/contradiction: \d+\/0\b/)
+  expect(out).toMatch(/primitives exercised: (—|\d+\/\d+)/)
+  // The em-dash is asserted where it is load-bearing, which is an empty log.
+  // `trainer.contract.test.ts` announces an empty log loudly, so the pair
+  // reports each other's blind spot rather than either failing silently.
+  if (!read().length) {
+    expect(out).toContain('— (nothing assimilated yet)')
+    expect(out).not.toContain('0/0')
+    expect(out).not.toMatch(/primitives exercised: \d/)
+  }
+})
 
 /** One real session: a cwd the bank agrees with, and a claim worth recording. */
 const session = (over: Partial<Session> = {}): Session => ({

@@ -1,7 +1,7 @@
 /**
  * System health, one line per subsystem.
  *
- * Seven independent checks, and independence is the point: a run reports every
+ * Eight independent checks, and independence is the point: a run reports every
  * subsystem it can reach rather than stopping at the first failure, because the
  * whole reason to run this is that several things can be wrong at once and you
  * want the list, not the first item. Each line carries the exact address or path
@@ -208,13 +208,54 @@ function ompConfig(ompHome: string): DoctorCheck {
 
 /** The committed mirror. Readable is the check; its contents are not this command's verdict. */
 function log(repo: string): DoctorCheck {
-  const file = join(repo, 'state', 'assimilation.log')
+  const file = logPath(repo)
   try {
     const text = readFileSync(file, 'utf8')
-    // Same delimiter assimilate.read() splits on, for the entry count.
-    return ok('log', `${file} → readable, ${text.split(/^## /m).length - 1} entr(ies), ${text.length} bytes`)
+    return ok('log', `${file} → readable, ${entries(text)} entr(ies), ${text.length} bytes`)
   } catch (e) {
     return no('log', `${file} → unreadable: ${String(e).slice(0, 120)}`)
+  }
+}
+
+const logPath = (repo: string) => join(repo, 'state', 'assimilation.log')
+
+/** Entry count, on the delimiter `assimilate.read()` splits on -- the same count, not a lookalike. */
+const entries = (text: string): number => text.split(/^## /m).length - 1
+
+/**
+ * Log rows against memory rows: whether every assimilation written is recallable.
+ *
+ * The two stores are written in the same call, so a row in one and not the other is a
+ * half-finished write -- which is what a failed mirror leaves behind, and it reads at
+ * recall exactly like never having been kept. The bank may legitimately hold MORE
+ * than the log: settling a record writes a second memory rather than replacing the
+ * rejected one (memory.ts), so equality is the fresh state and only a bank that is
+ * short is a fault.
+ *
+ * Read from `repo` rather than from `assimilate.read()`, which has no path parameter
+ * and so always reads this package's own log: in production those are the same file
+ * (`REPO` is assimilate's parent directory), and taking the repo keeps the check
+ * hermetic -- a fixture tree can be reconciled without this machine's record in it.
+ *
+ * Exported for the same reason the rest of the battery is not: the comparison is the
+ * assertion, and the two counts are the only injection point this check has.
+ */
+export function reconcile(logged: number, banked: number, bank: string): DoctorCheck {
+  return banked >= logged
+    ? ok('reconcile', `${bank} → log=${logged} bank=${banked}: every logged assimilation has a memory`)
+    : no('reconcile', `${bank} → log=${logged} bank=${banked} → ${logged - banked} rows unreachable`)
+}
+
+/** The same comparison, both sides read: log rows from disk, memory rows from the bank. */
+async function reconcileCheck(repo: string): Promise<DoctorCheck> {
+  const bank = bankFor(repo)
+  try {
+    const logged = entries(readFileSync(logPath(repo), 'utf8'))
+    return reconcile(logged, (await listMemories(bank)).length, bank)
+  } catch (e) {
+    // The `log` check already reports an unreadable log as its own failure; this
+    // line answers for the bank, which is the side this check cannot do without.
+    return no('reconcile', `${bank} at ${baseUrl()} → ${String(e).slice(0, 120)}`)
   }
 }
 
@@ -233,6 +274,7 @@ export async function checks(opts: DoctorOpts = {}): Promise<DoctorCheck[]> {
     trainer(repo),
     ompConfig(ompHome),
     log(repo),
+    await reconcileCheck(repo),
   ]
 }
 

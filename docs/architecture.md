@@ -21,6 +21,7 @@ Progress is assimilation, never coverage.
   L3  record            verdict in the payload          verdict is the user's
   L2  advisor           one WATCHDOG advisor           enforcement, not prompt
   L1  trainer           declarative agent, tools:[read]
+                       + --no-extensions + config overlay   roster measured: [read]
   L0  substrate         mental-model-atlas, 801 cards  read-only
 ```
 
@@ -53,25 +54,80 @@ shell** — not "no filesystem", not "no network":
 
 | The trainer CAN | because |
 |---|---|
-| read a local file | `read` is the allowlist |
+| read a local file | `read` is the allowlist, and the measured roster is exactly `["read"]` |
 | read a **directory** | `read` builds a tree via `buildDirectoryTree` (tools/read.ts:71) |
 | read an archive, SQLite row, PDF, notebook | same tool, same path |
 | **fetch a URL** | `read` dispatches to `fetch.ts` — `executeReadUrl` / `fetchReadUrl` / `parseReadUrlTarget` (tools/read.ts:80) |
 | read `ssh://` and internal `://` schemes | same tool, path resolution |
+| call `advise` | the advisor's own tool, in a separate runtime with `tools: [read]` (L2) |
 
-| The trainer CANNOT | because |
-|---|---|
-| write or edit a file | `write` / `edit` / `ast_edit` are not in the allowlist |
-| run a command | `bash` / `eval` are not in the allowlist |
-| search, glob, or grep | `grep` / `glob` / `find` are not in the allowlist |
-| spawn a subagent | `task` is not in the allowlist |
-| record to memory | `learn` / `retain` / `recall` / `reflect` / `memory_edit` are not in the allowlist |
-| mint or edit a managed skill | `manage_skill` is not in the allowlist — see the auto-include below |
+| The trainer CANNOT | because | the line that proves it |
+|---|---|---|
+| write or edit a file | `write` / `edit` / `ast_edit` are not in the roster | measured `dumpTools` = `["read"]` |
+| run a command | `bash` / `eval` are not in the roster | same |
+| search, glob, or grep | `grep` / `glob` / `find` are not in the roster | same |
+| spawn a subagent | `task` is not in the roster | same |
+| record to memory | `mcp__*` servers are not discovered | `disabledProviders` in the overlay |
+| mint or edit a managed skill | `autolearn.enabled: false` closes the `:730`/`:786` gate | tools/index.ts:730,786 |
+| call a plugin's tool | extensions are not discovered | `main.ts:1641-1643` |
+| reach a device via `write xd://<tool>` | `tools.xdev: false` | tools/index.ts:869-899 |
 
-**`--tools=read` is not, by itself, a hard boundary — and the previous version
-of this document claimed it was.** That claim was wrong, and it was wrong in the
-direction that matters. With an explicit tool list and no `restrictToolNames`,
-omp *widens* the list before filtering it (`tools/index.ts`):
+**`--tools=read` is not a hard boundary, and the previous version of this
+document was wrong twice over.** The first error was theoretical: with an
+explicit list and no `restrictToolNames`, omp *widens* the list before filtering
+it. The second was worse — the mitigation for that was also insufficient, and
+nobody had looked. An rpc `get_state` probe (`dumpTools`, **zero model calls**)
+with `--tools=read` plus an overlay closing only the auto-include returned:
+
+```
+TOOL LIST (103): read, bash, bash_status, bash_watch, bash_write, bash_kill,
+write, edit, aft_outline, aft_zoom, aft_inspect, aft_conflicts, aft_import,
+aft_safety, ast_grep_search, ast_grep_replace, mcp__cloakctl_*,
+mcp__memory_wire_memory_retain, mcp__sourcehound_cloakctl_*, …
+                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ 99 state-mutating
+```
+
+The trainer could shell out, write files, and **record to memory-wire** — the
+foundational guarantee, broken. Three independent leaks, each attributed by an
+A/B pair of rpc spawns and each closed:
+
+| Leak | Mechanism | Closed by | Measured |
+|---|---|---|---|
+| 1 — extensions | the installed omp-plugin registered `bash`, `write`, `edit`, `bash_*`, `aft_*` via `registerTool`, which never passes through `resolveBuiltinToolNames` — so **no `tools:` value could exclude them** | `--no-extensions` on every spawn | 103 → 2 |
+| 2 — MCP | the user's own `~/.omp/agent/mcp.json` is `level: "user"`; `mcp.enableProjectConfig: false` only drops `level: "project"` (mcp/config.ts:133-134) | `mcp.enableProjectConfig: false` **plus** `disabledProviders` | 2 → 1 |
+| 3 — xd:// write transport | with `tools.xdev` on (default true) and a list granting `read` but not `write`, omp allocates a **device-only `write`** so `write xd://<tool>` can dispatch mounted devices (tools/index.ts:869-899) | `tools.xdev: false` | 2 → 1 |
+
+Leak 1 is closed by a **flag**, not a config key, because extension discovery is
+not a setting. `--no-extensions` sets `options.disableExtensionDiscovery`
+(`main.ts:1641-1643`), and `explicit-only` mode contributes no ambient
+`extensions:`, no installed plugins, and no disk config
+(`discovery/omp-extension-roots.ts:274-278`). There is no overlay equivalent, which
+is why `--no-rules`/`--no-skills` were never going to be enough.
+
+Leak 2 needed both halves. `mcp.enableProjectConfig: false` alone left **88
+tools** — the project's own `.mcp.json` is empty, so the entire remainder came
+from the user-level file. `disabledProviders` is a plain array setting
+(`config/model-settings.ts:66`) and the overlay merges with
+**array-replaces-wholesale** semantics (`config/settings.ts:3745-3761`: a
+non-object override wins outright rather than unioning), so the overlay's list
+wins over the user's own config rather than adding to it. `cursor` is
+deliberately excluded: it is also a model `providerId`, and
+`config/model-registry.ts:2097-2105` filters the model catalog by the same set,
+so disabling it would drop the Cursor models and could break the trainer's own
+default model. It is already inert twice over — project half by
+`mcp.enableProjectConfig: false`, `~/` half because foreign user configs are
+opt-in via `enabledProviders` (`capability/index.ts:51-59`, `:363-375`).
+
+**`restrictToolNames` remains the one gate that would make all of this
+unnecessary** — it also sets `enableMCP = false` (`sdk.ts:2371`) — but it is
+SDK-only (`CreateAgentSessionOptions`, `sdk.ts:721`). The launch flag table
+(`commands/launch-help.ts`) has nothing that sets it, and `main.ts:1593-1597`
+maps `--tools` to `options.toolNames` and nothing else. No CLI invocation,
+including a palimpsest one, can set it. What ships is a mitigation.
+
+**Auto-include, still gated on autolearn/memory.** With an explicit tool list and
+no `restrictToolNames`, omp widens the list before filtering it
+(`tools/index.ts`):
 
 ```
 :687  if (requestedTools && !restrictToolNames) {      // the widening block
@@ -82,39 +138,32 @@ omp *widens* the list before filtering it (`tools/index.ts`):
 ```
 
 `manage_skill` creates, updates, and deletes managed `SKILL.md` files. A trainer
-holding it is an executor. So the mitigation:
+holding it is an executor. `autolearn.enabled: false` closes the gates at `:730`,
+`:786`, `:791`; `memory.backend: off` closes `:782-785` and `:795`; the `:807`
+filter then drops the auto-included names. Both keys are omp defaults, pinned in
+the overlay so the guarantee does not depend on the user's `config.yml`.
 
-- **`restrictToolNames` is the real gate and it has no CLI flag.** It is an
-  SDK option only (`CreateAgentSessionOptions`, sdk.ts:721). The launch flag
-  table (`commands/launch-help.ts`) has nothing that sets it, and
-  `main.ts:1593-1597` maps `--tools` to `options.toolNames` and nothing else. No
-  CLI invocation, including a palimpsest one, can set it.
-- **So the launcher passes `--config config/locked-down.yml`**, an overlay that
-  pins `autolearn.enabled: false` and `memory.backend: off`. Overlays merge last,
-  over global and project config (`config/settings.ts:3722-3726`), so these hold
-  regardless of what the user's own `config.yml` says — which is the difference
-  between a guarantee and a claim about one machine. Both settings off means the
-  gates at `:730`, `:732`, `:782-785`, `:786-790`, and `:791-797` are all closed,
-  and the `:807` filter then drops the auto-included names.
+**Second, independent mechanism: the deny map.** `tools.approval` in the overlay
+sets `deny` on 34 write/exec/memory tools. Nothing needs denying today — the
+roster is already `["read"]` — so this is not the primary lock. It exists so that
+a *future* auto-include gated on a setting nobody here knows about still cannot
+**execute**: user approval policies are authoritative in every mode including
+yolo (`tools/approval.ts:200-201`, `:235-240`). `tools/index.ts` never reads
+`cfgToolsApproval` — every consumer is execute-time — so the map provably cannot
+widen or narrow the roster. It is the same "narrower than `restrictToolNames`, and
+honest about it" trade the autolearn keys make, applied to execution instead of
+registration.
 
-**Residual risk, stated rather than smoothed over.** This is not
-`restrictToolNames`; it is narrower. It closes every auto-include omp currently
-gates on autolearn or a memory backend, and nothing else could widen the list
-today (`grep`/`ast_grep` need `grep` in the list, `ast_edit` needs `edit`, `goal`
-needs an active goal mode, `think` needs external thinking, `yield` needs
-`requireYieldTool`, which is false at task depth 0). But a future auto-include
-gated on some *other* setting would widen the list again, and only an omp-side
-flag or the SDK option would stop it. `tests/launcher.test.ts` asserts the
-overlay is on the built argv, so deleting it or dropping the flag breaks the
-build instead of silently handing the trainer a write tool.
-
-**It also cannot record, and that now has two independent mechanisms.** `learn`
-is a write tool, so it is absent from the allowlist. It is also not registered at
-all: `memory.backend` is `off` — omp's own default, and now pinned by the
-overlay rather than inherited from whatever the user's config happens to say — so
-the memory tools are gated off in `tools/index.ts` before the allowlist is even
-consulted. Whichever mechanism is inspected first, the verdict stays the user's:
-not a rule the trainer could forget, a capability it lacks.
+**Residual risk, stated rather than smoothed over.** What is *proven*: a roster
+of exactly `read`, captured over 14 `get_state` polls across 21 s so that
+late-arriving MCP tools cannot hide behind the 250 ms startup window
+(`mcp/settings.ts:22-30`). Six rpc spawns, all exiting 0 or 143, no prompt frame
+ever sent. What is *not* proven: that no future omp release can widen it again. A
+new provider id, a new extension-root source, or a new auto-include would each
+need a new line here, and only an omp-side flag or the SDK option would stop it
+structurally. `tests/launcher.test.ts` asserts the overlay is on the built argv
+**and** that its three load-bearing keys and `--no-extensions` are present, so
+deleting any of them breaks the build instead of silently restoring a write tool.
 
 Prompt: `trainer/role.md`, always resident.
 
@@ -170,6 +219,12 @@ Checks, in one pass:
 
 The advisor is a **critic, not a second trainer**. It never offers a framework,
 never answers, never praises. It reports violations and gets out of the way.
+
+**Its gate is DEFERRED, not passing.** Deliberately instructing the trainer to
+praise should produce a `blocker` and a retraction; that negative test has never
+been run, and the baited form of it is written up in
+`docs/advisor-gate-test.md`. What the config above asserts, via
+`palimpsest doctor`, is only that the key exists and holds exactly one entry.
 
 ### L3 — record
 
@@ -294,14 +349,15 @@ A gate that cannot fail is decoration.
 
 | Gate | Fails when |
 |---|---|
-| launcher args | `--config config/locked-down.yml` or `--advisor` leaves the built argv, or a write/execute tool is named |
+| launcher args | `--config config/locked-down.yml`, `--no-extensions`, or `--advisor` leaves the built argv; or a write/execute tool is named; or the overlay loses `mcp.enableProjectConfig`, `tools.xdev`, or a required `disabledProviders` entry; or the approval map is not deny-only, or names `read` |
 | trainer contract | a prohibition is deleted from `role.md` |
 | substrate index | counts drift from the atlas registry (801/191/256/354) |
 | lattice | a tier-1 card declares no primitive and cannot propagate |
 | falsifier: withhold | a framework is named before the user commits |
 | falsifier: contradiction | settled material yields a contradiction |
 | falsifier: novelty | **never auto-passes** — the user grades every claim |
-| advisor tone | the trainer praised and no blocker fired |
+| advisor count | `WATCHDOG.yml` has no `advisors:` key, or holds more or fewer than one |
+| advisor tone | **DEFERRED, not passing** — the negative test has never run; see `docs/advisor-gate-test.md` |
 | empty transcript | any check reads silence as success |
 | memory: rejected stays | a rejected record is unfindable, or its tag stops being `verdict:rejected` |
 | memory: verdict cannot move | settling a record edits the rejected row instead of appending |

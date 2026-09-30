@@ -7,40 +7,45 @@
  * leak the whole design exists to prevent. So the unit here is the ordered
  * sequence, not the token set.
  *
- * Two flows matter, and they differ only in the middle:
+ * Three flows matter, and they differ only at the front:
  *
+ *   bench    a machine run. `palimpsest bench` tells the trainer to digest the
+ *            input directly, so there is no demand and no release to withhold
+ *            behind -- it goes straight to a claim. Naming frameworks is the job
+ *            there, so the leak check has no gate to fire against and is skipped
+ *            by name rather than silently.
  *   digest   one-shot. Demand and release can share a turn, because there is no
- *            user turn between them. This is `digest`/`bench` -- and the README
- *            names it as the known limit of the withhold property.
+ *            user turn between them -- and the README names that as the known
+ *            limit of the withhold property.
  *   session  interactive. The user's own turn sits between the demand and the
  *            release; that turn is the commitment, and its absence is the whole
  *            mechanic.
  *
- * Both end identically: exactly one `[CLAIM]`, exactly one `[FALSIFIER]`, and an
- * `[ASSIMILATION]` whose `user-verdict` is still `PENDING`. A transcript that
- * grades itself is reported as a divergence at that position, not as a pass --
- * the verdict is the user's, and `record.ts` hardwires it for the same reason.
+ * All three end identically: exactly one `[CLAIM]`, exactly one `[FALSIFIER]`,
+ * and an `[ASSIMILATION]` whose `user-verdict` is still `PENDING`. A transcript
+ * that grades itself is reported as a divergence at that position, not as a pass
+ * -- the verdict is the user's, and `record.ts` hardwires it for the same reason.
  *
- * One digestion per transcript is the unit of comparison. A transcript carrying
- * two of them diverges from position 6 onward, which is the honest report: this
- * command certifies one trajectory, not a session log.
- *
- * A `falsify`/`bench` transcript diverges at position 0 by design. Those runs
- * instruct the trainer to skip the interactive loop and not emit
- * `[COMMIT-POINT]`, so they never exercise commitment-before-disclosure, and a
- * command that called them conforming would be reading silence as a pass. Use it
- * on a `digest` or `session` transcript, or declare `digest` explicitly.
+ * One digestion per transcript is the unit of comparison, and a transcript
+ * carrying two of them is *sliced* to its first rather than reported from
+ * position 6 onward. A session over a long catalyst runs more than one, and a
+ * report that lists the second digestion's steps as divergences of the first is
+ * noise that hides the real finding. 15 of the 27 real transcripts carry more
+ * than one claim; a within-turn double claim is NOT a second digestion and still
+ * diverges, because that is sprawl rather than repetition.
  */
 import { cardNames } from './atlas'
 import { readEvents, type SessionEvents, type SessionEvent } from './session-read'
 
-export type Flow = 'digest' | 'session'
+export type Flow = 'bench' | 'digest' | 'session'
 
 /**
- * The two golden sequences, in order. `user-commit` is the only difference
- * between them; everything after it is the same contract.
+ * The three golden sequences, in order. Everything after the release is the same
+ * contract in all of them; only the front differs, because that is where the
+ * commitment lives.
  */
 export const GOLDEN: Record<Flow, string[]> = {
+  bench: ['claim', 'falsifier', 'assimilation', 'verdict-pending'],
   digest: ['demand', 'release', 'claim', 'falsifier', 'assimilation', 'verdict-pending'],
   session: ['demand', 'user-commit', 'release', 'claim', 'falsifier', 'assimilation', 'verdict-pending'],
 }
@@ -68,6 +73,14 @@ export type Report = {
 
 const isAssistant = (r: string) => r === 'assistant' || r === 'model'
 const isUser = (r: string) => r === 'user' || r === 'human'
+
+// ponytail: markers are read only from assistant turns. In the real transcripts a
+// `toolResult` turn often carries the protocol text back -- `read trainer/role.md`
+// echoes `[COMMIT-POINT]` and the rest verbatim -- so reading toolResult as the
+// trainer speaking would certify a file read as a digestion. The cost is that a
+// trainer invoked as a tool, whose stdout arrives as a toolResult, reports
+// "transcript ended" rather than its real shape. If that shape has to be graded,
+// pass the trainer's own stdout through `readEvents` instead of widening this.
 
 /** The structural markers, in the order a turn that has all of them writes them. */
 const MARKERS: [RegExp, string][] = [
@@ -126,9 +139,23 @@ const namesFramework = (text: string, sigs: string[]): string | undefined => {
   return sigs.find((s) => hay.includes(s))
 }
 
-/** The ordered steps an actual transcript took. */
+/**
+ * Whether the transcript has a gate to leak in front of.
+ *
+ * A leak is a framework named before a disclosure it should have waited behind,
+ * so it needs a demand or a release to be in front of. A machine run has
+ * neither -- it was told to digest, and naming cards is the job -- so reporting a
+ * leak there would be reporting the protocol working. A transcript that *released*
+ * without demanding has leaked whatever it calls itself, so the release counts
+ * as a gate too: it is the disclosure the demand should have preceded.
+ */
+const hasGate = (events: SessionEvent[]): boolean =>
+  events.some((e) => isAssistant(e.role) && /\[COMMIT-POINT\]|\[RELEASE\]/.test(e.text))
+
+/** The ordered steps an actual transcript took, one digestion and no more. */
 export function stepsOf(events: SessionEvent[], sigs?: string[]): Step[] {
   const steps: Step[] = []
+  const gate = hasGate(events)
   let demanded = false
   let committed = false
 
@@ -152,7 +179,7 @@ export function stepsOf(events: SessionEvent[], sigs?: string[]): Step[] {
     // an earlier turn, or earlier in this one. Scoping to the text ahead of the
     // marker is what keeps a name quoted *after* `[COMMIT-POINT]` -- the rest of
     // a one-shot turn -- from reading as a leak.
-    if (!demanded && sigs) {
+    if (!demanded && sigs && gate) {
       const before = demand ? e.text.slice(0, demand.pos) : e.text
       const named = namesFramework(before, sigs)
       if (named) steps.push({ token: `framework-named (${named})`, entry: e.index })
@@ -171,16 +198,40 @@ export function stepsOf(events: SessionEvent[], sigs?: string[]): Step[] {
   return steps
 }
 
-/** Which flow this transcript is: two or more user turns means the interactive loop. */
-export function detectFlow(events: SessionEvent[]): Flow {
-  return events.filter((e) => isUser(e.role)).length >= 2 ? 'session' : 'digest'
+/**
+ * One digestion, cut at the first verdict.
+ *
+ * Everything from the first `user-verdict` onward is a second digestion of a
+ * second catalyst, and comparing it against the first one's contract is a false
+ * finding. A transcript that never reaches a verdict -- abandoned at the
+ * commitment, which is 18 of the 27 real transcripts and the correct behaviour
+ * when the user never comes back -- is left whole: there is no digestion to cut
+ * at, and the missing steps are the finding.
+ */
+function firstDigestion(steps: Step[]): Step[] {
+  const at = steps.findIndex((s) => s.token.startsWith('verdict-'))
+  return at === -1 ? steps : steps.slice(0, at + 1)
+}
+
+/**
+ * Which flow this transcript is. Two or more user turns means the interactive
+ * loop; past that it is a `bench` run if it went straight to a claim without
+ * ever asking for a read or releasing behind one. A transcript with no markers at
+ * all stays `digest`, so an empty file is reported against the stricter contract
+ * rather than excused as a machine run.
+ */
+export function detectFlow(events: SessionEvent[], steps?: Step[]): Flow {
+  if (events.filter((e) => isUser(e.role)).length >= 2) return 'session'
+  const toks = (steps ?? stepsOf(events)).map((s) => s.token)
+  return !toks.includes('demand') && !toks.includes('release') && toks.includes('claim') ? 'bench' : 'digest'
 }
 
 export function analyse(transcript: SessionEvents, declare?: Flow): Report {
   const sigs = leakSignatures()
   const auto = declare === undefined
-  const flow = declare ?? detectFlow(transcript.events)
-  const steps = stepsOf(transcript.events, sigs)
+  const all = stepsOf(transcript.events, sigs)
+  const flow = declare ?? detectFlow(transcript.events, all)
+  const steps = firstDigestion(all)
   const golden = GOLDEN[flow]
   const divergences: Divergence[] = []
 
@@ -202,7 +253,11 @@ export function analyse(transcript: SessionEvents, declare?: Flow): Report {
     steps,
     divergences,
     conforms: divergences.length === 0,
-    skipped: sigs ? undefined : 'atlas index unreadable: framework-leak check skipped',
+    skipped: !sigs
+      ? 'atlas index unreadable: framework-leak check skipped'
+      : hasGate(transcript.events)
+        ? undefined
+        : 'no demand and no release: nothing was withheld, so the framework-leak check is skipped',
   }
 }
 
@@ -213,7 +268,7 @@ const fmt = (d: Divergence) =>
 /** Print the divergence report. Returns the exit code: 0 only on CONFORMS. */
 export function trajectory(file: string, declare?: Flow): number {
   if (declare && !(declare in GOLDEN)) {
-    console.error(`unknown flow "${declare}": digest | session`)
+    console.error(`unknown flow "${declare}": bench | digest | session`)
     return 1
   }
   const t = readEvents(file)

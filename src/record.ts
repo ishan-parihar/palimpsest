@@ -116,8 +116,17 @@ function list(text: string, name: string): string[] {
 const isUser = (role: string) => role === 'user' || role === 'human'
 const isAssistant = (role: string) => role === 'assistant' || role === 'model'
 
-/** A `[ASSIMILATION]` block field, e.g. `claim: <one integrated claim>`. */
-function field(block: string, key: string): string | undefined {
+/**
+ * A `key: value` line out of an `[ASSIMILATION]` block, e.g. `claim: <one
+ * integrated claim>`.
+ *
+ * Exported because the two fields the record schema does not model -- `catalyst`
+ * and `reading` -- are read out of the same block by the one-shot `digest` path,
+ * and a second copy of this regex is a second thing to get wrong. Two log-header
+ * keys are not a ninth record field: they are metadata `assimilate.format`
+ * writes and nothing downstream parses.
+ */
+export function field(block: string, key: string): string | undefined {
   return new RegExp(`^${key}:\\s*(.+)$`, 'm').exec(block)?.[1]?.trim()
 }
 

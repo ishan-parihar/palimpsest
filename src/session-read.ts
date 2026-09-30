@@ -21,8 +21,16 @@
  *            carry plain string content
  *   toolCall is a content-block type inside an ASSISTANT message, never a role
  *
- * Advisor sidecars (`__advisor[.<slug>].jsonl`) live in the same directory tree
- * and are excluded: they are the critic's own turns, not the trainer's.
+ * The advisor's notes are a fourth thing, and the reason this reader keeps them
+ * apart from turns: omp 18.3.1 writes them INLINE, as `type: "custom_message"`
+ * entries in the session itself rather than as a sidecar file. They are not
+ * `type: "message"`, so they carry no `message.role` and were dropped by the
+ * `entry.type !== "message"` filter -- invisible to `trace`, and with no way to
+ * count them or time them. They are read here into `advisorNotes`, still not
+ * turns, because the critic did not speak to the user.
+ *
+ * Advisor *sidecars* (`__advisor[.<slug>].jsonl`) are excluded: they would be
+ * the critic's own transcript, which is not the trainer's. See `isAdvisor`.
  */
 import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
@@ -65,7 +73,17 @@ export function sessionSlug(cwd: string): string {
   return `--${encode(target.replace(/^[/\\]/, ''))}--`
 }
 
-/** Advisor transcripts: `__advisor.jsonl` / `__advisor.<slug>.jsonl` (transcript-recorder.ts). */
+/**
+ * Advisor sidecars: `__advisor.jsonl` / `__advisor.<slug>.jsonl`.
+ *
+ * Forward-compat, and labelled as such on purpose. omp 18.3.1 writes the
+ * advisor's notes inline as `custom_message` entries (see `AdvisorNote`), and
+ * none of the 27 real transcripts in this project's bucket carries a sidecar
+ * file at all -- so the filter below is exercised only by fixtures. It stays
+ * because excluding the critic's own transcript is still the right answer for a
+ * file that does exist, and a filter that is only tested against a file the
+ * writer no longer produces is a filter nobody will notice breaking.
+ */
 const isAdvisor = (name: string) => name.startsWith('__advisor')
 
 export type Session = {
@@ -108,7 +126,8 @@ function toolResultsOf(message: { content?: unknown }, role: string): number {
   return blocks || (role === 'toolResult' ? 1 : 0)
 }
 
-const stampOf = (iso: unknown, epoch: unknown): string =>
+/** Entry timestamp when written, else a message epoch. `custom_message` has no message, so `epoch` is optional. */
+const stampOf = (iso: unknown, epoch?: unknown): string =>
   typeof iso === 'string' && iso ? iso : typeof epoch === 'number' ? new Date(epoch).toISOString() : '?'
 
 
@@ -128,12 +147,46 @@ export type SessionEvent = {
   toolResults: number
 }
 
+/**
+ * One inline `custom_message`: the advisor's note, kept beside the turns rather
+ * than among them. Deliberately not a `SessionEvent` -- it is not a turn, it has
+ * no role, and folding it into `events` would renumber every entry index a
+ * finding can cite.
+ */
+export type AdvisorNote = {
+  /** 0-based index among notes, so a note is citable the way an event is. */
+  index: number
+  /** Entry timestamp when written, else the epoch it carried. */
+  timestamp: string
+  /** `customType`, camelCase: `advisor` in every real note. Not a role. */
+  type: string
+  /** The advisory body exactly as written, tags included. */
+  text: string
+  /**
+   * `details.notes[].severity`, verbatim. Carried as a string and never mapped to
+   * a fixed set: the 27 real transcripts hold 18 notes and they are concern 16,
+   * nit 1, blocker 1, so any enumeration here would be a guess that hides a
+   * severity the advisor has not used yet.
+   */
+  severity: string
+  /** The trainer turn this answers, when its id is in this transcript. */
+  parentIndex?: number
+  /**
+   * Milliseconds after the parent turn. This is the cost that was unmeasurable:
+   * the note is the advisor's whole visible output, so without it a firing is
+   * indistinguishable from silence and latency cannot be computed at all.
+   */
+  afterMs?: number
+}
+
 /** One whole transcript, parsed. `unparseable` is reported, never fatal. */
 export type SessionEvents = {
   file: string
   cwd: string
   sessionId: string
   events: SessionEvent[]
+  /** Inline advisor notes, in file order. Empty for a writer that does not emit them. */
+  advisorNotes: AdvisorNote[]
   /** Lines that would not parse: a session is appended to while we read it. */
   unparseable: number
   /** Every line in the file, blanks included. */
@@ -149,7 +202,7 @@ export type SessionEvents = {
  * mtime would also work here and would be wrong for a resumed session, which
  * rewrites an old file in place.
  */
-export function latestFile(cwd: string): string | undefined {
+function latestFile(cwd: string): string | undefined {
   const dir = join(sessionsRoot(), sessionSlug(cwd))
   if (!existsSync(dir)) return undefined
   const file = readdirSync(dir)
@@ -170,7 +223,19 @@ export function latestFile(cwd: string): string | undefined {
  */
 export function readEvents(file: string): SessionEvents | undefined {
   if (!existsSync(file)) return undefined
-  const out: SessionEvents = { file, cwd: '', sessionId: '', events: [], unparseable: 0, lines: 0 }
+  const out: SessionEvents = {
+    file,
+    cwd: '',
+    sessionId: '',
+    events: [],
+    advisorNotes: [],
+    unparseable: 0,
+    lines: 0,
+  }
+  // Entry id -> event index, so a note's `parentId` resolves to the turn it
+  // answers. omp writes the note into the message chain, so the parent is always
+  // already seen; an id that is not here is a note from a branched chain.
+  const byId = new Map<string, number>()
   const raw = readFileSync(file, 'utf8').split('\n')
 
   for (const [n, line] of raw.entries()) {
@@ -182,7 +247,11 @@ export function readEvents(file: string): SessionEvents | undefined {
       type?: string
       cwd?: string
       id?: string
+      parentId?: string
       timestamp?: string
+      customType?: string
+      content?: unknown
+      details?: { notes?: { severity?: string }[] }
       message?: { role?: string; content?: unknown; timestamp?: number }
     }
     try {
@@ -196,10 +265,31 @@ export function readEvents(file: string): SessionEvents | undefined {
       out.sessionId = entry.id ?? ''
       continue
     }
+    if (entry.type === 'custom_message') {
+      const stamp = stampOf(entry.timestamp)
+      const parent = byId.get(entry.parentId ?? '')
+      // A note with no `details.notes` still counts: it is one advisory with an
+      // unstated severity, not a message to be dropped on the floor.
+      const notes = entry.details?.notes?.length ? entry.details.notes : [{ severity: undefined }]
+      for (const note of notes) {
+        const gap = parent === undefined ? NaN : Date.parse(stamp) - Date.parse(out.events[parent]!.timestamp)
+        out.advisorNotes.push({
+          index: out.advisorNotes.length,
+          timestamp: stamp,
+          type: String(entry.customType ?? 'custom'),
+          text: String(entry.content ?? ''),
+          severity: note?.severity ?? 'unstated',
+          parentIndex: parent,
+          afterMs: Number.isNaN(gap) ? undefined : gap,
+        })
+      }
+      continue
+    }
     if (entry.type !== 'message') continue
     const role = entry.message?.role
     if (!role) continue
     const message = entry.message ?? {}
+    if (entry.id) byId.set(entry.id, out.events.length)
     out.events.push({
       index: out.events.length,
       timestamp: stampOf(entry.timestamp, message.timestamp),
@@ -220,7 +310,9 @@ export function latestEvents(cwd: string): SessionEvents | undefined {
 
 /**
  * The session the record is built from: the newest transcript, filtered to the
- * turns record.ts accepts. Everything else in a session is plumbing.
+ * turns record.ts accepts. Everything else in a session is plumbing -- and
+ * `trace`/`trajectory` read the same file through `latestEvents` when they need
+ * the parts dropped here. Two views, one parser, no third accessor.
  */
 export function readLatest(cwd: string): Session | undefined {
   const read = latestEvents(cwd)
@@ -233,9 +325,4 @@ export function readLatest(cwd: string): Session | undefined {
       .filter((e) => CONVERSATION.has(e.role) && e.text.trim())
       .map((e) => ({ role: e.role, text: e.text })),
   }
-}
-
-/** The latest session's conversation turns, in order. Empty when there is none. */
-export function readLatestSession(cwd: string): TranscriptMessage[] {
-  return readLatest(cwd)?.messages ?? []
 }

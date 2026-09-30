@@ -9,10 +9,10 @@
  * trainer's.
  */
 import { test, expect, afterAll, spyOn } from 'bun:test'
-import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { join, relative, sep } from 'node:path'
-import { line, resolve, snippet, trace } from '../src/trace'
+import { line, noteLine, resolve, snippet, trace } from '../src/trace'
 
 const FIX = join(import.meta.dirname, 'fixtures', 'sessions')
 const fixture = (n: string) => join(FIX, n)
@@ -49,6 +49,13 @@ copyFileSync(fixture('golden-session.jsonl'), join(BUCKET, '2026-09-30T11-00-00-
 // __advisor sorts AFTER "2026-..." lexically, so without the filter this file
 // would be picked as the latest session. It carries a marker-shaped block, so
 // reading it would certify the critic's words as the trainer's trajectory.
+//
+// FORWARD-COMPAT, and inert against reality: omp 18.3.1 writes the advisor's
+// notes INLINE as `custom_message` entries (the `advisor.jsonl` fixture above),
+// and none of the 27 real transcripts in this project's bucket has a sidecar at
+// all. This guard is kept rather than deleted because excluding the critic's own
+// transcript is still right for a file that does exist -- and a filter nothing in
+// the wild exercises is a filter nobody will notice breaking.
 copyFileSync(fixture('__advisor.jsonl'), join(BUCKET, '__advisor.jsonl'))
 
 afterAll(() => rmSync(HOME, { recursive: true, force: true }))
@@ -116,13 +123,72 @@ test('a half-written last line is skipped and counted, never fatal', () => {
   expect(capture(() => trace(fixture('half-written.jsonl'))).code).toBe(0)
 })
 
-test('an empty transcript is reported as empty, not as nothing to report', () => {
+test('an empty transcript is reported as empty, and as nothing to measure', () => {
   const t = resolve(fixture('empty.jsonl'))!
   expect(t.events).toEqual([])
   expect(t.unparseable).toBe(0)
   const { code, text } = capture(() => trace(fixture('empty.jsonl')))
-  expect(code).toBe(0)
+  // 3, not 0: "the transcript had no entries" is not "the transcript is clean".
+  // A caller scripting this has to be able to tell a skip from a pass, and 0
+  // read as a pass is how an empty file gets filed as evidence.
+  expect(code).toBe(3)
   expect(text).toContain('no message entries')
+})
+
+test('an advisor note is read, timed against its parent turn, and counted', () => {
+  const t = resolve(fixture('advisor.jsonl'))!
+  // Two inline `custom_message` entries, neither of which is a turn: they carry no
+  // `message.role`, so the `type === "message"` filter dropped them entirely and
+  // the critic's whole visible output was invisible.
+  expect(t.events.map((e) => e.index)).toEqual([0, 1])
+  expect(t.advisorNotes).toHaveLength(2)
+
+  const [first, second] = t.advisorNotes
+  expect(first!.type).toBe('advisor')
+  expect(first!.severity).toBe('concern')
+  expect(first!.parentIndex).toBe(1)
+  // 11:00:12.621 - 11:00:12.619. This is the advisor's latency, and it was not
+  // computable at all before, because a firing was indistinguishable from silence.
+  expect(first!.afterMs).toBe(2)
+  expect(first!.text).toContain('[PROPAGATE]')
+
+  // A note whose parent is not in the transcript still reads, with the gap
+  // reported as uncomputable rather than guessed at.
+  expect(second!.parentIndex).toBeUndefined()
+  expect(second!.afterMs).toBeUndefined()
+
+  const l = noteLine(first!)
+  expect(l).toContain('advisor/concern')
+  expect(l).toContain('+2ms after entry 1')
+  expect(l).toContain(first!.timestamp)
+  expect(noteLine(second!)).toContain('parent turn not in this transcript')
+})
+
+test('advisor notes reach the printed report, counted and tallied by severity', () => {
+  const { code, text } = capture(() => trace(fixture('advisor.jsonl')))
+  expect(code).toBe(0)
+  expect(text).toContain('2 advisor notes (concern 2)')
+  expect(text).toContain('advisor/concern  +2ms after entry 1')
+  // A transcript whose writer emits none says so, so "the advisor never fired"
+  // is a measured zero rather than an absence nobody can cite.
+  expect(capture(() => trace(fixture('golden-digest.jsonl'))).text).toContain('0 advisor notes')
+})
+
+test('the severity tally is the severity, not a hardcoded one', () => {
+  // The corpus is not all `concern`: the 27 real transcripts carry concern 16,
+  // nit 1, blocker 1. A tally reporting only `concern` would print "0 concern"
+  // for a run the advisor blocked, which is the one line that must not lie.
+  const dir = mkdtempSync(join(tmpdir(), 'palimpsest-advisor-'))
+  const blocked = join(dir, 'blocked.jsonl')
+  writeFileSync(
+    blocked,
+    readFileSync(fixture('advisor.jsonl'), 'utf8').replace('"severity": "concern"', '"severity": "blocker"'),
+  )
+  try {
+    expect(capture(() => trace(blocked)).text).toMatch(/2 advisor notes \([^)]*blocker 1[^)]*concern 1[^)]*\)/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('the advisor sidecar is not a session, even when it sorts last', () => {
@@ -131,13 +197,29 @@ test('the advisor sidecar is not a session, even when it sorts last', () => {
   expect(t!.events.map((e) => e.text).join('\n')).not.toContain('THE-PRIVATE-ADVISOR-TURN')
   expect(t!.events.map((e) => e.text).join('\n')).not.toContain('user-verdict: integrated')
 })
-
 test('the printed report names the file, the header, and the skipped lines', () => {
   const { code, text } = capture(() => trace(fixture('half-written.jsonl')))
   expect(code).toBe(0)
   expect(text).toContain('half-written.jsonl')
   expect(text).toContain('id sess-digest')
   expect(text).toContain('3 entries · 6 lines · 1 unparseable line(s) skipped')
+})
+
+test('the exit-code table and the code that implements it agree', () => {
+  // The table in src/trace.ts is the repo-wide convention, and a table nothing
+  // checks is a comment. The two runnables this repo can execute without a model
+  // call are asserted here: `trace` itself, and `falsify`'s failure code.
+  const src = (n: string) => readFileSync(join(import.meta.dirname, '..', 'src', n), 'utf8')
+  const falsify = /async function falsify[\s\S]*?\n}/.exec(src('cli.ts'))![0]
+  // A FAILED check is a finding. It used to exit 2, which the table reserves for
+  // a harness fault, so the two most different outcomes of one command were
+  // indistinguishable to a caller.
+  expect(falsify).toContain('process.exit(1)')
+  expect(falsify).not.toContain('process.exit(2)')
+  // 3 for nothing-to-measure, 1 for a path that is not there, 0 for a chronology.
+  const trace = src('trace.ts')
+  expect(trace).toMatch(/return 3\s*\n/)
+  expect(trace).toContain('no session transcript found')
 })
 
 test('a missing transcript is a nonzero exit, not an empty success', () => {

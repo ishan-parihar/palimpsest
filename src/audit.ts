@@ -114,10 +114,6 @@ export async function novelty(): Promise<Check> {
   }
 }
 
-export async function all(): Promise<Check[]> {
-  return [await withhold(), await contradiction(), await novelty()]
-}
-
 // --- bench ----------------------------------------------------------------
 
 export type Digest = {

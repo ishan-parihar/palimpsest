@@ -66,6 +66,12 @@ export function format(a: Assimilation): string {
   // The log is one line per field, so a value carrying newlines would be written
   // whole and read back truncated. Collapse at the writer: every caller gets a
   // round-trippable line instead of a silently shortened one on the next read.
+  //
+  // The header is deliberately NOT capped here. cli.ts caps a one-shot digest's
+  // catalyst (its `slug`) because a whole document is a poor header, while a
+  // session's `brought` is the user's first turn and is written whole -- the two
+  // are different policies for the same field, and folding them into one rule
+  // would silently truncate a user turn in the only committed store.
   const one = (s: string) => s.replace(/\s+/g, ' ').trim()
   const lines = [`## ${a.date} · ${one(a.catalyst)}`]
   const put = (k: string, v: string | string[] | undefined) => {

@@ -87,7 +87,13 @@ async function quiet(): Promise<number> {
 const HEALTHY = (url: string): Response =>
   url.endsWith('/health')
     ? new Response('ok')
-    : new Response('[]', { headers: { 'content-type': 'application/json' } })
+    : // One memory for the one logged assimilation, so `reconcile` has two stores
+      // that agree to reconcile. Zero against a non-empty log is a real FAIL.
+      url.includes('/memories')
+      ? new Response('[{"id":"m1","content":"verdict: PENDING","created_at":"2026-09-30T00:00:00Z"}]', {
+          headers: { 'content-type': 'application/json' },
+        })
+      : new Response('[]', { headers: { 'content-type': 'application/json' } })
 
 let route: (url: string) => Response | Error = HEALTHY
 const realFetch = globalThis.fetch
@@ -118,7 +124,7 @@ function fingerprint(dir: string): string {
   return out.sort().join('\n')
 }
 
-test('a healthy system reports PASS on all seven subsystems, naming what it checked', async () => {
+test('a healthy system reports PASS on all eight subsystems, naming what it checked', async () => {
   const cs = await checks({ repo: REPO, ompHome: OMP })
   expect(cs.map((c) => c.name)).toEqual([
     'memory-wire',
@@ -128,18 +134,20 @@ test('a healthy system reports PASS on all seven subsystems, naming what it chec
     'trainer',
     'omp-memory',
     'log',
+    'reconcile',
   ])
   for (const c of cs) expect(`${c.name} ${c.pass}: ${c.detail}`).toBe(`${c.name} true: ${c.detail}`)
   expect(cs.every((c) => c.pass)).toBe(true)
 
   // Every detail carries the exact address or path, so a FAIL needs no re-derivation.
   expect(byName(cs, 'memory-wire').detail).toContain('/health → 200 ok')
-  expect(byName(cs, 'bank').detail).toContain(`${bankFor(REPO)} → 0 memories`)
+  expect(byName(cs, 'bank').detail).toContain(`${bankFor(REPO)} → 1 memories`)
   expect(byName(cs, 'sessions').detail).toContain(join(OMP, 'agent', 'sessions', sessionSlug(REPO)))
   expect(byName(cs, 'advisor').detail).toContain(join(REPO, 'WATCHDOG.yml'))
   expect(byName(cs, 'trainer').detail).toContain(join(REPO, 'trainer', 'role.md'))
   expect(byName(cs, 'omp-memory').detail).toContain(join(OMP, 'agent', 'config.yml'))
   expect(byName(cs, 'log').detail).toContain('1 entr(ies)')
+  expect(byName(cs, 'reconcile').detail).toContain(`${bankFor(REPO)} → log=1 bank=1`)
 })
 
 test('the exit code is 0 when everything passes and 1 as soon as one thing fails', async () => {
@@ -149,12 +157,12 @@ test('the exit code is 0 when everything passes and 1 as soon as one thing fails
   expect(await quiet()).toBe(1)
 })
 
-test('checks are independent: one dead subsystem does not hide the other six', async () => {
+test('checks are independent: one dead subsystem does not hide the other seven', async () => {
   route = (url) => (url.endsWith('/health') ? new Error('ECONNREFUSED') : HEALTHY(url))
   const cs = await checks({ repo: REPO, ompHome: OMP })
-  expect(cs).toHaveLength(7)
+  expect(cs).toHaveLength(8)
   expect(byName(cs, 'memory-wire').pass).toBe(false)
-  expect(cs.filter((c) => c.pass)).toHaveLength(6)
+  expect(cs.filter((c) => c.pass)).toHaveLength(7)
 })
 
 test('a /health that answers JSON is not memory-wire, however green the status', async () => {

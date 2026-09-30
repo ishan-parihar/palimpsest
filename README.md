@@ -4,8 +4,8 @@ A training system for one mind. The AI is the trainer; the digestion happens in
 you, not in the model.
 
 Built on [`omp`](https://github.com/can1357/oh-my-pi) (v18.3.1) as the engine, with
-[`mental-model-atlas`][atlas] as the enzyme set: 801 cards, 33 primitives, 10
-clusters.
+[`mental-model-atlas`][atlas] as the enzyme set: 801 cards, 33 primitives, 39
+families.
 
 [atlas]: https://github.com/ishan-parihar/mental-model-atlas
 
@@ -47,7 +47,9 @@ is a gate rather than a report.
 
 The session itself runs with the advisor **forced on**: `advisor.enabled`
 defaults to false and only rpc/acp hosts inherit it, so the launcher passes
-`--advisor` rather than trusting a default.
+`--advisor` rather than trusting a default. It also runs with extensions off,
+because an installed plugin was handing the trainer `bash` and `write` outside
+the tool allowlist entirely.
 
 ## The one mechanic
 
@@ -62,6 +64,7 @@ instead of reality, and produces the feeling of progress without the substance.
 ```
 bin/palimpsest      launcher
 config/locked-down.yml  --config overlay; makes tools:[read] actually binding
+                       (kills MCP, xd:// write transport, autolearn, denies exec)
 trainer/role.md     the contract — always resident
 trainer/digest.md   digestion protocol — read at runtime
 trainer/probe.md    discrimination probes — read at runtime
@@ -73,7 +76,7 @@ src/assimilate.ts   the record
 src/record.ts       transcript-to-record parser, verdict hardwired PENDING
 src/session-read.ts latest-session transcript reader (JSONL, no omp import)
 src/memory.ts       memory-wire client — persistRecord by bank + verdict tags
-src/doctor.ts       seven subsystem checks, one PASS/FAIL line each
+src/doctor.ts       eight subsystem checks, one PASS/FAIL line each
 src/trace.ts        tool-calling chronology, entry index on every line
 src/trajectory.ts   golden ordering vs an actual transcript
 state/              assimilation.log, committed
@@ -99,18 +102,30 @@ is capability absence, not a request for restraint. `learn` is a write tool, so
 it is absent too: the trainer cannot record, and verdicts are structurally the
 user's.
 
-**`--tools=read` alone would not have been enough, and the previous version of
-this README said it was.** With an explicit tool list and no
-`restrictToolNames`, omp auto-includes `manage_skill` — a write tool that creates
-and deletes managed `SKILL.md` files — whenever `autolearn.enabled` is true
-(`tools/index.ts:687,730-731,786-790`). `restrictToolNames` is the gate that
-skips that block and omp exposes it only as an SDK option, never as a flag. So
-every spawn also passes `--config config/locked-down.yml`, an overlay pinning
-`autolearn.enabled: false` and `memory.backend: off`. Overlays merge over the
-user's own config, so the boundary does not depend on what one machine's
-`config.yml` says. `tests/launcher.test.ts` asserts the overlay and `--advisor`
-are on the built argv, and names the residual risk: this is narrower than
-`restrictToolNames`, and `docs/architecture.md` says exactly how.
+**`--tools=read` alone is not enough, and so was the first fix.** omp auto-includes
+a write tool on an explicit list, so every spawn also passes
+`--config config/locked-down.yml` — and that was still not enough. An rpc
+`get_state` probe (zero model calls) with `--tools=read` plus that overlay
+returned **103 tools, 99 of them state-mutating**: `bash`, `write`, `edit`, and
+every `mcp__*` tool including `mcp__memory_wire_memory_retain`, so the trainer
+could record. Three more leaks, each closed and each measured:
+
+- an installed extension registered its own `bash`/`write`/`edit` outside the
+  allowlist entirely → `--no-extensions` (a flag; extension discovery is not a
+  config key)
+- the user's own `~/.omp/agent/mcp.json` loaded anyway → `disabledProviders` in
+  the overlay, since `mcp.enableProjectConfig` only covers the project half
+- `tools.xdev` allocated a device-only `write` for `write xd://<tool>` →
+  `tools.xdev: false`
+
+The roster now measures as exactly `["read"]`, polled 14 times over 21 s so
+late-arriving MCP tools cannot hide, with a `tools.approval` deny map behind it
+so a future auto-include still cannot execute. `docs/architecture.md` L1 owns
+the mechanism, the line numbers, and the residual risk — this is a proven
+mitigation, not the real gate, which is the SDK-only `restrictToolNames`.
+`tests/launcher.test.ts` asserts the overlay, `--no-extensions`, `--advisor`,
+and the overlay's load-bearing keys are on the built argv, so dropping any of
+them breaks the build rather than silently handing the trainer a write tool.
 
 ## The falsifier
 
@@ -138,7 +153,7 @@ fail is decoration.
 `palimpsest bench <dir>` runs one digestion per `.md` file and reports only what
 can be judged **without** the user: convergence rate, claim sprawl, contact-surface
 width, cluster spread, contradiction counts, and any pathologies (`NO-CLAIM`,
-`SPRAWL`, `THIN`, `SINGLE-CLUSTER`). It then prints every claim for you to grade.
+`SPRAWL`, `THIN`, `SINGLE-FAMILY`). It then prints every claim for you to grade.
 
 It computes **no novelty verdict on purpose** — an instrument that grades itself is
 the failure this project exists to catch. It also does not write to
@@ -158,23 +173,24 @@ withhold property is verified for the first turn and assumed for the rest.
 ## Substrate note
 
 The atlas is **read-only** from this repo. It is developed and audited on its own
-terms; `palimpsest` consumes it. Two things worth knowing about its shape, both
-found the hard way:
-
-- Card heading level is **inconsistent** (`#` in some leaves, `##` in most). The
-  indexer anchors on `**Tier:**` instead, and is asserted against the atlas's own
-  counts (801 / 191 / 256 / 354) so a drift breaks the test rather than silently
-  shrinking the substrate.
-- Every card declares **its own `**Primitives:**`**, so the lattice is a real
-  graph. Propagation from one tier-1 seed reaches over half of tier-1 in two hops.
-  That density is where the exponential lives.
+terms; `palimpsest` consumes it. `docs/architecture.md` L0 records what its shape
+forces on the indexer — heading level is inconsistent, so the indexer anchors on
+`**Tier:**` and is asserted against the atlas's own counts (801 / 191 / 256 / 354),
+so a drift breaks the test rather than silently shrinking the substrate. Every
+card declares its own `**Primitives:**`, which is what makes the lattice a real
+graph rather than a metaphor.
 
 ## Not built yet
 
-- **Phase 2 — write-back.** Assimilation currently records; it does not mutate
+Phase numbers below are `docs/plan.md`'s, which owns the ledger.
+
+- **Phase 4 — verify it compounds.** Run sessions over time and check whether any
+  claim appears in *no single session transcript*. Nothing automated: grading a
+  synthesis claim is the same job as grading a novelty claim.
+- **Phase 5 — write-back.** Assimilation currently records; it does not mutate
   the atlas. Growth becomes compounding when a digestion can add an edge or mint
-  a card, gated by `registry.py --check`.
-- **Phase 3 — always-on.** Catalyst still has to be handed over. `omp --mode=rpc`
+  a card, gated by `registry.py --check`. Gated on Phase 4 passing.
+- **Always-on.** Catalyst still has to be handed over. `omp --mode=rpc`
   (newline-delimited JSON over stdio, documented, verified) plus
   `set_host_tools` is the route: host-owned tools with no extension code at all.
 - **Model selection.** The launcher passes flags through; a config overlay with

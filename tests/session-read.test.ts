@@ -11,7 +11,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'nod
 import { homedir, tmpdir } from 'node:os'
 import { join, relative, sep } from 'node:path'
 import { parse } from '../src/record'
-import { readLatest, readLatestSession, sessionSlug } from '../src/session-read'
+import { readEvents, readLatest, sessionSlug } from '../src/session-read'
 
 /**
  * The fixture home is a temp directory under the REAL home, not under $HOME:
@@ -34,6 +34,9 @@ const BUCKET = join(homedir(), '.omp', 'agent', 'sessions', slugFor(PROJECT))
 afterAll(() => rmSync(HOME, { recursive: true, force: true }))
 
 const line = (o: unknown) => `${JSON.stringify(o)}\n`
+
+/** The on-disk transcript fixtures, which carry whole files rather than parts. */
+const fixture = (n: string) => join(import.meta.dirname, 'fixtures', 'sessions', `${n}.jsonl`)
 
 /** The physical head of a real file: a padded title slot, then the header. */
 const head = (id: string, cwd = PROJECT) =>
@@ -98,6 +101,12 @@ write(
 
 // The advisor's own sidecar, in the same directory, carrying a marker-shaped
 // block. Reading it would record the critic's words as the trainer's.
+//
+// FORWARD-COMPAT, and inert against reality: omp 18.3.1 writes the advisor's
+// notes INLINE as `custom_message` entries, and none of the 27 real transcripts
+// in this project's bucket has a sidecar file at all. The filter stays because
+// excluding the critic's own transcript is still the right answer for a file
+// that does exist.
 write('__advisor.jsonl', head('adv') + message('assistant', '[CLAIM]\nPRIVATE-ADVISOR', 'v1'))
 write('__advisor.conscience.jsonl', head('adv2') + message('assistant', 'PRIVATE-ADVISOR-2', 'v2'))
 
@@ -130,14 +139,14 @@ test('readLatest: the newest session, and its header is the ground truth for cwd
 })
 
 test('assistant text is extracted from content blocks, in order', () => {
-  const texts = readLatestSession(PROJECT)
-    .filter((m) => m.role === 'assistant')
+  const texts = readLatest(PROJECT)!
+    .messages.filter((m) => m.role === 'assistant')
     .map((m) => m.text)
   expect(texts).toEqual([ASSIMILATION, 'and here is the rest of the thought'])
 })
 
 test('toolCall blocks, thinking, toolResult turns and the advisor are all dropped', () => {
-  const all = readLatestSession(PROJECT).map((m) => `${m.role}:${m.text}`).join('\n')
+  const all = readLatest(PROJECT)!.messages.map((m) => `${m.role}:${m.text}`).join('\n')
   for (const leak of [
     'PRIVATE-TOOLCALL',
     'PRIVATE-TOOLRESULT',
@@ -146,7 +155,7 @@ test('toolCall blocks, thinking, toolResult turns and the advisor are all droppe
     'OLD-SESSION',
   ])
     expect(all).not.toContain(leak)
-  expect(readLatestSession(PROJECT).map((m) => m.role)).toEqual(['user', 'assistant', 'assistant'])
+  expect(readLatest(PROJECT)!.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'assistant'])
 })
 
 test('a user turn may be a plain string rather than blocks', () => {
@@ -156,7 +165,7 @@ test('a user turn may be a plain string rather than blocks', () => {
     join(dir, '2026-09-27T09-00-00-000Z_s.jsonl'),
     head('s', join(HOME, 'Documents', 'legacy')) + message('user', 'a plain string turn', 'u1'),
   )
-  expect(readLatestSession(join(HOME, 'Documents', 'legacy'))).toEqual([
+  expect(readLatest(join(HOME, 'Documents', 'legacy'))!.messages).toEqual([
     { role: 'user', text: 'a plain string turn' },
   ])
 })
@@ -169,10 +178,46 @@ test('no bucket and an empty bucket are both undefined, not a crash', () => {
 })
 
 test('the read transcript parses into a record with a claim and a falsifier', () => {
-  const r = parse(readLatestSession(PROJECT))
+  const r = parse(readLatest(PROJECT)!.messages)
   expect(r.brought).toBe('I keep starting projects without finishing them.')
   expect(r.claim).toContain('the finish line was never defined')
   expect(r.falsifier).toContain('Two projects shipped this quarter')
   // The trainer cannot grade itself: a verdict is hard-coded PENDING at parse.
   expect(r.verdict).toBe('PENDING')
+})
+
+// The advisor's notes are not turns, so they are not in `readLatest`'s messages
+// and never reach the record -- but they are in the transcript, and the point of
+// reading them is that the critic's firings stop being invisible.
+test('an inline custom_message is an advisor note, not a turn', () => {
+  const t = readEvents(fixture('advisor'))!
+  // A note is not a turn: no role, so it is not in `events` and it renumbers
+  // nothing. Every entry index a finding cites still means the same entry.
+  expect(t.events.map((e) => e.index)).toEqual([0, 1])
+  expect(t.events.map((e) => e.role)).toEqual(['user', 'assistant'])
+  expect(t.advisorNotes).toHaveLength(2)
+
+  const [first, second] = t.advisorNotes
+  expect(first!.index).toBe(0)
+  expect(first!.type).toBe('advisor')
+  expect(first!.severity).toBe('concern')
+  // `parentId` resolves to the entry it answers, which is what makes the note's
+  // cost computable: 11:00:12.621 - 11:00:12.619.
+  expect(first!.parentIndex).toBe(1)
+  expect(first!.afterMs).toBe(2)
+
+  // A note whose parent is not in this transcript still reads; the gap is
+  // reported as uncomputable rather than guessed at or dropped.
+  expect(second!.parentIndex).toBeUndefined()
+  expect(second!.afterMs).toBeUndefined()
+  expect(second!.text).toContain('[FALSIFY]')
+})
+
+test('a transcript with no custom_message reports zero notes, not undefined', () => {
+  // The measurement has to exist to be zero. `undefined` would make every caller
+  // re-ask, and would let a writer that stopped emitting notes look identical to
+  // one whose notes were never read.
+  for (const name of ['golden-digest', 'golden-session', 'empty']) {
+    expect(readEvents(fixture(name))!.advisorNotes).toEqual([])
+  }
 })

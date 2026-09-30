@@ -1,47 +1,152 @@
 # Capability lock-down overlay, passed as `--config` by src/omp.ts.
 #
-# WHY THIS FILE EXISTS. `--tools=read` is not a hard boundary in omp. With an
-# explicit tool list and no `restrictToolNames`, `resolveToolNames` widens the
-# list before filtering it (packages/coding-agent/src/tools/index.ts):
+# WHY THIS FILE EXISTS. `--tools=read` is NOT a hard boundary in omp, and the
+# first version of this file was wrong about how badly. A runtime probe (rpc
+# `get_state` -> `dumpTools`, zero model calls) with only `autolearn.enabled:
+# false` + `memory.backend: off` offered the trainer **103 tools, 99 of them
+# state-mutating**: `bash`, `write`, `edit`, every `mcp__*` tool including
+# `mcp__memory_wire_memory_retain` — the trainer could record. Three
+# independent leaks, each closed below, each attributed by an A/B probe.
 #
+# ── LEAK 1: extensions. `--no-rules`/`--no-skills` do NOT disable extension
+# loading (proven: `extension_ui_request` frames). The installed omp-plugin
+# shipped its own `bash`, `write`, `edit`, `bash_*`, and `aft_*` tools, which
+# shadow the built-ins and are registered through `registerTool`, entirely
+# outside the `resolveBuiltinToolPlan` allowlist. Closed by the `--no-extensions`
+# FLAG (main.ts:1641-1643 -> `options.disableExtensionDiscovery`), which puts
+# extension roots in `explicit-only` mode (omp-extension-roots.ts:274-278):
+# no ambient `extensions:`, no installed plugins, no disk config. Nothing to
+# configure here — it is not a settings key, and there is no overlay equivalent.
+#
+# ── LEAK 2: MCP. `restrictToolNames` is the real gate (it also sets
+# `enableMCP = false`, sdk.ts:2371) but it is SDK-only
+# (`CreateAgentSessionOptions`, sdk.ts:721) and the launch flag table
+# (commands/launch-help.ts) has nothing that sets it; main.ts:1593-1597 maps
+# `--tools` to `options.toolNames` and nothing else. No CLI invocation,
+# including a palimpsest one, can set it.
+#   `mcp.enableProjectConfig: false` closes only the PROJECT half: it drops
+#   servers whose `_source.level === "project"` (mcp/config.ts:133-134). The
+#   user's own `~/.omp/agent/mcp.json` is `level: "user"` and still loaded —
+#   measured at 88 tools with this key alone.
+#   `disabledProviders` closes the user half. It is a plain array setting
+#   (config/model-settings.ts:66) merged with array-replaces-wholesale
+#   semantics (settings.ts:3745-3761: a non-object override wins outright), so
+#   the overlay's list wins over the user's config rather than unioning with it.
+#   `native` and `mcp-json` are the two providers that read
+#   `<agentDir>/mcp.json` (builtin.ts:206-215, mcp-json.ts:186); the rest are
+#   third-party importers that would reintroduce the same class from a project
+#   config or a plugin.
+#   NOTE: `cursor` is deliberately NOT listed. It is both a discovery provider
+#   AND a model providerId (packages/catalog), so disabling it would drop the
+#   Cursor models from the catalog and could break the trainer's own default
+#   model. It is already inert here twice over: `mcp.enableProjectConfig:
+#   false` drops its project config, and `~/` configs of foreign tools are
+#   opt-in via `enabledProviders` (capability/index.ts:51-59,363-375).
+#
+# ── LEAK 3: the xd:// device-only write transport. With `tools.xdev` on
+# (default true, tools/settings.ts:866-877) and an explicit list that grants
+# `read` but omits `write`, omp allocates a device-only `write` anyway
+# (tools/index.ts:869-899): `write xd://<tool>` dispatches mounted devices
+# while filesystem writes stay rejected. Measured as a literal `write` in the
+# roster. `tools.xdev: false` removes it, and with it the transport that could
+# otherwise reach any later-registered MCP or extension tool.
+#
+# ── Auto-include, still gated on autolearn/memory. With an explicit tool list
+# and no `restrictToolNames`, `resolveToolNames` widens the list before
+# filtering it (tools/index.ts):
 #   :687  `if (requestedTools && !restrictToolNames)` opens the auto-include block
 #   :730  autolearn.enabled && taskDepth 0  ->  pushes `manage_skill`
 #   :732  ... and pushes `learn` when the memory backend is hindsight|mnemopi|local
 #   :786  isToolAllowed("manage_skill") = autolearn.enabled && (top level || explicit)
 #   :807  the final `names` filter applies isToolAllowed, so a gate that is off
 #         removes the tool even if it was auto-included
-#
 # `manage_skill` is a WRITE tool: it creates, updates, and deletes managed
-# SKILL.md files. A trainer holding it is an executor.
-#
-# `restrictToolNames` is the flag-free gate that would skip the block entirely,
-# but omp exposes it ONLY as an SDK option (CreateAgentSessionOptions, sdk.ts:721).
-# The launch flag table (commands/launch-help.ts) has no flag for it, and
-# main.ts:1593-1597 maps `--tools` to `options.toolNames` and nothing else — so
-# no CLI invocation can set it. `--config` is therefore the strongest available
-# mitigation: the overlay is merged last, over global and project config
-# (config/settings.ts:3722-3726), so these two values hold regardless of what
-# the user's own config.yml says.
-#
-# `autolearn.enabled: false`  -> the gate at :730/:786/:791 is off, so neither
+# SKILL.md files. A trainer holding it is an executor. So:
+#   `autolearn.enabled: false` -> the gate at :730/:786/:791 is off, so neither
 #                                `manage_skill` nor `learn` survives :807.
-# `memory.backend: off`       -> the gate at :782-785 and :795, so `retain`,
+#   `memory.backend: off`      -> the gate at :782-785 and :795, so `retain`,
 #                                `recall`, `reflect`, and `memory_edit` are off
 #                                too. Also already omp's default
-#                                (autolearn/settings.ts:13, memory `off`), pinned
-#                                here so the guarantee does not depend on the
-#                                user's config.
+#                                (autolearn/settings.ts:13), pinned here so the
+#                                guarantee does not depend on the user's config.
 #
-# RESIDUAL RISK, stated honestly in docs/architecture.md: this closes every
-# auto-include that omp currently gates on autolearn or a memory backend. It is
-# not the same as `restrictToolNames`. Any future auto-include gated on some
-# other setting would widen the list again, and only an omp-side flag or an
-# SDK-level `restrictToolNames` would close that. tests/launcher.test.ts asserts
-# this overlay is actually on the command line, so deleting it breaks the build
-# rather than silently restoring the write tool.
+# ── The deny list is a SECOND, independent mechanism, not the primary one.
+# The roster is already exactly `[read]`, so nothing needs denying today. This
+# exists so that a future omp auto-include gated on some setting nobody here
+# knows about still cannot EXECUTE: `tools.approval` user policies are
+# authoritative in every mode including yolo (tools/approval.ts:200-201,
+# 235-240), so a widened roster is inert rather than merely discouraged. It is
+# the same "narrower than restrictToolNames, and honest about it" trade the
+# autolearn keys make, applied to execution instead of registration.
+#
+# ── RESIDUAL RISK, stated rather than smoothed over. This is not
+# `restrictToolNames`; it is narrower. What is proven is a roster of exactly
+# `read`, polled 14 times over 21 s so that late-arriving MCP tools (the
+# 250 ms startup window, mcp/settings.ts:22-30) cannot hide. What is NOT proven
+# is that no future omp release can widen it again: a new provider id, a new
+# extension root source, or a new auto-include would each need a new line here.
+# `tests/launcher.test.ts` asserts this overlay is on the built argv AND that
+# its three load-bearing keys are present, so deleting it — or dropping
+# `--no-extensions` — breaks the build rather than silently restoring a write
+# tool.
 
 autolearn:
   enabled: false
 
 memory:
   backend: off
+
+mcp:
+  enableProjectConfig: false
+
+tools:
+  xdev: false
+  approval:
+    write: deny
+    edit: deny
+    ast_edit: deny
+    bash: deny
+    eval: deny
+    debug: deny
+    task: deny
+    learn: deny
+    manage_skill: deny
+    retain: deny
+    recall: deny
+    reflect: deny
+    memory_edit: deny
+    generate_image: deny
+    tts: deny
+    browser: deny
+    computer: deny
+    github: deny
+    web_search: deny
+    security_scan: deny
+    checkpoint: deny
+    rewind: deny
+    todo: deny
+    ask: deny
+    glob: deny
+    grep: deny
+    find: deny
+    lsp: deny
+    wait: deny
+    think: deny
+    goal: deny
+    context_notes: deny
+    new_context: deny
+    ast_grep: deny
+
+disabledProviders:
+  - native
+  - mcp-json
+  - omp-plugins
+  - agent-plugins
+  - claude-plugins
+  - claude
+  - codex
+  - gemini
+  - opencode
+  - windsurf
+  - vscode
+  - github

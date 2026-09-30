@@ -108,9 +108,34 @@ test('propagation actually spreads', () => {
 })
 
 test('assimilation record parses and never self-assigns a verdict', () => {
-  for (const a of read()) {
-    expect(['PENDING', 'integrated', 'rejected', 'not-my-language']).toContain(a.verdict)
+  const log = read()
+  // Non-vacuity, stated rather than absorbed. The previous version looped over
+  // `read()` and passed -- and the committed log is currently empty, so that loop
+  // ran zero times and asserted nothing; a parser returning garbage would have
+  // passed it too. A silent skip is the exact failure this repo is built against,
+  // so the empty case says so, and the warning is asserted as part of the
+  // contract: deleting it turns this test red instead of quietly green.
+  const said: string[] = []
+  const loud = console.warn
+  console.warn = (...a: unknown[]) => {
+    said.push(a.join(' '))
+    loud(...a)
   }
+  try {
+    if (log.length) {
+      for (const a of log) {
+        expect(['PENDING', 'integrated', 'rejected', 'not-my-language']).toContain(a.verdict)
+      }
+    } else {
+      console.warn(
+        'SKIP: state/assimilation.log is empty -- the verdict invariant is UNCHECKED, not satisfied. ' +
+          'Run `palimpsest digest <file>` to make it bite.',
+      )
+    }
+  } finally {
+    console.warn = loud
+  }
+  expect(said.length > 0).toBe(log.length === 0)
 })
 
 // --- the bug the bench caught ---------------------------------------------
