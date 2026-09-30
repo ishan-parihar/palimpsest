@@ -36,9 +36,14 @@ function field(body: string, key: string): string | undefined {
   return new RegExp(`^-\\s+\\*\\*${key}:\\*\\*\\s*(.+)$`, 'm').exec(body)?.[1]?.trim()
 }
 
-export function read(): Assimilation[] {
-  if (!existsSync(LOG)) return []
-  return readFileSync(LOG, 'utf8').split(/^## /m).slice(1).map(parseBlock)
+/**
+ * Every record in the log. The path is a parameter so a test (and the profile's
+ * synthesis) can read a log of its own; the parser is not re-derived there, which
+ * is the only reason this takes an argument.
+ */
+export function read(log: string = LOG): Assimilation[] {
+  if (!existsSync(log)) return []
+  return readFileSync(log, 'utf8').split(/^## /m).slice(1).map(parseBlock)
 }
 
 /** One `## <date> · <catalyst>` block back into a record. */

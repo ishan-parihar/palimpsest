@@ -43,13 +43,19 @@
  *
  * ## What the client refuses to do
  *
- * It never sends `document_id`. memory-wire's default `update_mode` is `replace`,
- * which deletes the document's prior row and inserts the new one in one
- * transaction -- a working upsert, and exactly wrong here: settling a record
- * would destroy the record of what it was before. With no `document_id`, retain
- * is a pure insert-or-return-existing, which is what an append-only verdict log
- * wants. Tags are replaced wholesale on a real write, so a revision never
+ * It never sends `document_id` for a record. memory-wire's default `update_mode`
+ * is `replace`, which deletes the document's prior row and inserts the new one in
+ * one transaction -- a working upsert, and exactly wrong for a verdict: settling a
+ * record would destroy the record of what it was before. With no `document_id`,
+ * retain is a pure insert-or-return-existing, which is what an append-only verdict
+ * log wants. Tags are replaced wholesale on a real write, so a revision never
  * inherits the previous revision's tags.
+ *
+ * `replaceDocument` below is the one deliberate exception, and it exists because
+ * that reasoning inverts for a snapshot: the user profile is a roll-up of the log,
+ * so its previous version is not history, it is a claim about the user that the
+ * current log has since contradicted. One always-current row is the honest shape,
+ * and it is what `update_mode: replace` is for.
  */
 import { basename, resolve } from 'node:path'
 import type { Verdict } from './assimilate'
@@ -221,6 +227,39 @@ export async function persistRecord(record: AssimilationRecord, opts: PersistOpt
     context: contextFor(record),
   }
   const res = (await post(`/banks/${bank}/retain`, body)) as { id?: string }
+  if (typeof res?.id !== 'string' || !res.id) throw new Error(`memory-wire retain returned no id: ${JSON.stringify(res)}`)
+  return res.id
+}
+
+export type DocumentOptions = {
+  readonly bank: string
+  /** The document to replace. Two writes to one id are one row, not two. */
+  readonly documentId: string
+  readonly tags: readonly string[]
+  /** Stored beside the content and redacted on write, like the content. */
+  readonly context?: string
+}
+
+/**
+ * Write a document, replacing the prior row for that `documentId` in the same
+ * transaction. Returns the id of the row that now holds it.
+ *
+ * `update_mode: 'replace'` is sent explicitly rather than relied upon as the
+ * default: the whole property here is that there is exactly one row per document
+ * afterwards, and a default that changes upstream would turn that into silent
+ * accumulation while every caller still believed it was replacing.
+ */
+export async function replaceDocument(content: string, opts: DocumentOptions): Promise<string> {
+  if (!opts.bank.trim()) throw new Error('bank must be a non-empty memory-wire bank id')
+  if (!opts.documentId.trim()) throw new Error('documentId must be non-empty; it is what gets replaced')
+  if (!content.trim()) throw new Error('content must be non-empty')
+  const res = (await post(`/banks/${encodeURIComponent(opts.bank)}/retain`, {
+    content,
+    document_id: opts.documentId,
+    update_mode: 'replace',
+    tags: [...opts.tags],
+    context: opts.context,
+  })) as { id?: string }
   if (typeof res?.id !== 'string' || !res.id) throw new Error(`memory-wire retain returned no id: ${JSON.stringify(res)}`)
   return res.id
 }

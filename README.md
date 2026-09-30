@@ -88,6 +88,7 @@ palimpsest                          # open the session (omp TUI, trainer active)
 palimpsest digest <file|->          # one-shot digestion; records to the log
 palimpsest falsify [check]          # the gate: withhold|contradiction|novelty
 palimpsest state                    # assimilation summary
+palimpsest profile                  # the user profile: frameworks, drift, open threads
 palimpsest settle <verdict>         # last entry integrated|rejected|not-my-language
 palimpsest atlas [query]            # search the card index
 palimpsest propagate "<card>" <hops> # walk the primitive lattice
@@ -100,6 +101,15 @@ palimpsest trajectory <file>        # golden-trajectory divergence report
 The last three read only and mutate nothing. `doctor` prints the exact address or path
 each check looked at, so a `FAIL` is actionable without re-deriving the config;
 `/health` must return exactly `ok`, not merely 200 — a foreign process answers 200 too.
+
+`profile` is the one command that writes a synthesis rather than a record: it
+re-aggregates the log, compares against the previous profile to report drift, and
+replaces one always-current document in the `palimpsest-profile` bank. It also runs
+by itself on every 10th recorded assimilation, printing one line and nothing else.
+It is a deterministic roll-up — every list item cites the log date it came from —
+and it renders to **you**: the trainer has no tool, no prompt line and no client
+for that bank, so a profile can never become praise fuel. Nothing about it is
+committed; `state/assimilation.log` is the record and the profile is derived from it.
 
 ## The trainer/executor line
 
@@ -151,7 +161,7 @@ The launcher is plumbing; **the trainer contract is the product.**
 ## Proof
 
 ```bash
-bun test        # 143 pass, 0 fail, 12 files
+bun test        # 172 pass, 0 fail, 13 files
 ```
 
 No dependencies, no `package.json` — Bun runs the TypeScript directly. The suite is
@@ -165,6 +175,7 @@ substrate fails rather than shrinking.
 
 Ordered, with owners, in `docs/remaining.md`. Short version: nobody has run a real
 session yet, so every loop-level guarantee is fixture-tested and none is
-user-tested. Then synthesis over time (Phase 4), write-back into the atlas (Phase
+user-tested. Then what the profile cannot yet answer (it aggregates the log; it does
+not tell you whether retrieval builds on earlier verdicts), write-back into the atlas (Phase
 5, gated on 4), 616 of 801 cards with no `### Digest` field, 2–5 minutes per model
 call with the advisor doubling it.

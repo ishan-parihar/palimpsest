@@ -5,6 +5,7 @@ import { append, read, settle, type Assimilation, type Verdict } from './assimil
 import { parse, field, toAssimilation, fromAssimilation, type Record as SessionRecord } from './record'
 import { readLatest } from './session-read'
 import { recordTranscript } from './record-session'
+import { autoSynthesize, profileCmd } from './profile'
 // The bank id comes from memory.ts rather than being re-derived here: one project
 // is one memory-wire namespace, and a second derivation is a second namespace.
 import { bankFor, persistRecord } from './memory'
@@ -84,8 +85,15 @@ async function recordSession(): Promise<void> {
     persist: (r, sessionId) => persist(r, sessionId),
   })
   if (out.status === 'bank-mismatch') die(out.message)
-  if (out.status === 'recorded') console.error('\n--- recorded to state/assimilation.log (verdict PENDING) ---')
-  else console.error(`\n--- ${out.message} ---`)
+  if (out.status === 'recorded') {
+    console.error('\n--- recorded to state/assimilation.log (verdict PENDING) ---')
+    // Every 10th record synthesizes the profile. Silent for nine records out of
+    // ten, and the line it prints is a notice, not a report: `palimpsest profile`
+    // is the readable form. It never throws, so a mirror that is down cannot cost
+    // the assimilation that was just written.
+    const note = await autoSynthesize()
+    if (note) console.error(note)
+  } else console.error(`\n--- ${out.message} ---`)
 }
 
 /**
@@ -262,6 +270,13 @@ switch (cmd) {
   case 'digest': await digest(rest[0] ?? die('usage: palimpsest digest <file|->')); break
   case 'falsify': await falsify(rest[0]); break
   case 'state': state(); break
+  // The one command that writes a synthesis rather than a record. Renders to the
+  // user and only the user: the trainer has no client for the bank it lands in.
+  case 'profile': {
+    const code = await profileCmd()
+    if (code) process.exit(code)
+    break
+  }
   case 'settle': {
     const verdict = ver(rest[0] ?? die('usage: palimpsest settle <verdict>'))
     if (!settle(verdict)) die('no PENDING assimilation to settle')
@@ -315,5 +330,5 @@ switch (cmd) {
     if (code) process.exit(code)
     break
   }
-  default: die(`unknown command "${cmd}"\nusage: palimpsest [session|digest|falsify|state|settle|atlas|propagate|bench|doctor|trace|trajectory]`)
+  default: die(`unknown command "${cmd}"\nusage: palimpsest [session|digest|falsify|state|profile|settle|atlas|propagate|bench|doctor|trace|trajectory]`)
 }
