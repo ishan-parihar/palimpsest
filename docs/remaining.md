@@ -5,26 +5,24 @@ State as of `5edb2f6`: 136 pass / 0 fail, tree clean, daemon live on
 ordered — each item unblocks the ones after it. Nothing here needs inventing;
 all of it is verification, usage, or deferred-by-design work.
 
-## 1. Advisor dispatch probe — 1 model call, agent
+## 1. Advisor dispatch — CLOSED 2026-09-30
 
-The negative test proved the trainer refuses affirmation twice, unassisted —
-but the advisor never called its model (0 input, 0 output, one
-`advisor_yielded` frame). Unknown: WATCHDOG roster failing to load vs. review
-dispatch short-circuiting.
+Cause was `--no-session`: without a session file the turn never dispatches
+(0 spend vs thousands). Roster builds, reviews cost real tokens, advisor
+reasons explicitly. Nine baited runs + one instructed-praise run: the
+trainer refused every time, so the advisor correctly stayed silent.
 
-- Do: one baited rpc run with `--session-dir` at `/tmp` (drop `--no-session`),
-  then read whether the roster built. Driver exists at `/tmp/negtest.ts`.
-- Gate: the probe names discovery or dispatch, with frame evidence.
-- Owner: agent. Cost: 1 call. Blocked by: nothing.
+## 2. Advisor gate — CLOSED as far as construction allows
 
-## 2. Advisor negative test, for real — 2–3 model calls, agent
-
-Rerun the baited rpc once dispatch works.
-
-- Gate: `<advisory severity="blocker">` on a pressured affirmation, plus a
-  retraction — raw frames kept. Until then the gate stays decoration, as
-  WATCHDOG.yml already admits.
-- Owner: agent. Cost: 2–3 calls. Blocked by: item 1.
+`advise()` → guard → `<advisory>` observed live at concern + nit, end to
+end, in one run. `severity="blocker"` is unexercised because no violation
+has ever occurred — the trainer cannot be made to praise through any
+channel (disk re-read + AGENTS.md injection beat even an overriding
+directive). Residual guard: `tests/advisor-gate.test.ts` pins the WATCHDOG
+wording that matters (single advisor, severity mapping, silence rule,
+budget exemption), mutation-verified. The deferral is lifted for the
+plumbing; the firing itself awaits the first real violation, which will
+now be visible when it happens.
 
 ## 3. First real sessions — user
 
