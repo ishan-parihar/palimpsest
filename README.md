@@ -1,11 +1,10 @@
 # palimpsest
 
 A training system for one mind. The AI is the trainer; the digestion happens in
-you, not in the model.
-
-Built on [`omp`](https://github.com/can1357/oh-my-pi) (v18.3.1) as the engine, with
-[`mental-model-atlas`][atlas] as the enzyme set: 801 cards, 33 primitives, 39
-families.
+you, not in the model. Built on [`omp`](https://github.com/can1357/oh-my-pi) as the
+engine, with [`mental-model-atlas`][atlas] as the enzyme set — **801 cards** (191
+T1 / 256 T2 / 354 T3), **33 primitives**, 39 families, a real graph because every
+card declares its own `**Primitives:**`.
 
 [atlas]: https://github.com/ishan-parihar/mental-model-atlas
 
@@ -14,186 +13,158 @@ families.
 Frameworks are enzymes. Catalyst arrives — a document, a thread, a failure, a
 decision you are sitting with. The atlas graph breaks it across every node it
 touches, propagates through the shared primitives, surfaces what it contradicts
-in what you already hold, and resolves to **one** claim. That claim is yours
-before it is the record's.
+in what you already hold, and resolves to **one** claim, which is yours first.
 
-The growth is not coverage. It is that the substrate becomes second nature and
-then becomes unnecessary. Progress is assimilation, never a percentage.
+**The one mechanic: commitment before disclosure.** Read the framework before
+reasoning and you do recognition, not generation — which feels exactly like
+possession and is worth almost nothing. So the trainer poses, demands your read,
+waits, then releases. It never praises: praise rewards matching the trainer's
+approval instead of reality. Growth is not coverage but the substrate becoming
+second nature, and then unnecessary.
 
+## Install
+
+```bash
+git clone https://github.com/ishan-parihar/palimpsest
+cd palimpsest && ./install/install.sh
+```
+
+The script detects the platform, installs Bun and omp, installs memory-wire (v0.5.0,
+sha256-verified against the release's checksum), verifies the atlas, clones the
+repo, starts memory-wire on an OS-assigned free loopback port with its own
+database, and ends at `palimpsest doctor`. Idempotent throughout; every failure
+exits nonzero. Linux `x86_64` or `aarch64` only.
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--install-dir <path>` | `~/.local/share/palimpsest` | where the repo is cloned |
+| `--repo-url <url\|path>` | `https://github.com/ishan-parihar/palimpsest` | clone source, resolved before use |
+| `--atlas-dir <path>` | `~/.agents/skills/mental-model-atlas` | atlas location |
+| `--atlas-repo <url>` | *(unset, deliberately)* | clone the atlas when the dir is empty |
+| `--memory-port <n>` | `0` | `0` asks the OS for a free port |
+| `--memory-db <path>` | `~/.local/share/memory-wire/palimpsest.db` | this project's own store, never the shared one |
+| `--bin-dir <path>` | `~/.local/bin` | where omp / mise / memory-wire are linked |
+| `--bun-version <v>` | `1.4.2` | Bun version to install or accept |
+| `--omp-version <v>` | `18.3.1` | omp version to install or accept, via mise |
+| `--no-daemon` | off | verify everything, start nothing; the doctor gate then fails, correctly |
+| `--help` | | the same list |
+
+Three defaults are refusals, not conveniences. Where you see `OWNER` in the script source it is a literal placeholder guard; the shipped default is the real repo,
+so the script stops until you pass a real `--repo-url`. The atlas is **not
+published** — `github.com/ishan-parihar/mental-model-atlas` returns 404 — so there
+is no default clone URL and none is invented: supply a copy at `--atlas-dir` or
+pass `--atlas-repo <url>`, and either way the card count is checked at 801. The port
+defaults to 0 because 8888 is memory-wire's tree-wide default, often another
+process, and 18899 is this repo's author-side default; neither is assumed.
+
+Two side effects, not hidden: the Bun installer appends to your shell rc files, and
+the omp step runs `mise use -g`, which **rewrites your mise global config** to pin
+omp at 18.3.1, replacing a `"latest"` entry.
+
+```bash
+source ~/.local/share/palimpsest/memory.env   # PALIMPSEST_MEMORY_ADDR, db, PATH
+cd ~/.local/share/palimpsest && ./bin/palimpsest
+```
+
+`memory.env` also records how to stop this install's memory-wire. If a daemon was
+already running the script will not stop it — that daemon owns the single
+`serve.json` state file — and runs `memory-wire serve` itself, with its own db.
+
+## Quickstart
+
+```bash
+./bin/palimpsest                    # train. the trainer asks; you answer.
+./bin/palimpsest state               # what has been assimilated, verdicts included
+./bin/palimpsest settle integrated   # rule on the last claim. this is your vote.
+```
+
+On a fresh install `palimpsest doctor` reports exactly one `FAIL`: `sessions`,
+which reads a directory the first session creates. Train once and it goes green;
+every other `FAIL` is real and the installer stops on it.
 ## Commands
 
 ```bash
 palimpsest                          # open the session (omp TUI, trainer active)
 palimpsest digest <file|->          # one-shot digestion; records to the log
-palimpsest falsify [check]          # run the acceptance gate
-palimpsest bench <dir>              # instrument test over many catalysts
+palimpsest falsify [check]          # the gate: withhold|contradiction|novelty
 palimpsest state                    # assimilation summary
-palimpsest settle <verdict>         # mark the last entry integrated|rejected|not-my-language
+palimpsest settle <verdict>         # last entry integrated|rejected|not-my-language
 palimpsest atlas [query]            # search the card index
 palimpsest propagate "<card>" <hops> # walk the primitive lattice
-palimpsest doctor                   # subsystem health, PASS/FAIL per line
+palimpsest bench <dir>              # instrument test over many catalysts
+palimpsest doctor                   # 8 subsystem checks, PASS/FAIL per line
 palimpsest trace [file|cwd]         # tool-calling chronology, one line per event
 palimpsest trajectory <file>        # golden-trajectory divergence report
 ```
 
-The last three read only. `doctor` checks each subsystem independently, prints the
-exact address or path it checked, mutates nothing, and exits nonzero if anything
-FAILs. `trace` prints the tool calls the recorder throws away — did the trainer
-reach for `read` before it spoke — with the entry index on every line so a finding
-can cite one. `trajectory` compares an actual transcript against the golden
-ordering and reports `EXPECTED <x> AT <position>, FOUND <y>` per divergence; a
-conforming transcript prints `CONFORMS`. It is nonzero on any divergence, so it
-is a gate rather than a report.
+The last three read only and mutate nothing. `doctor` prints the exact address or path
+each check looked at, so a `FAIL` is actionable without re-deriving the config;
+`/health` must return exactly `ok`, not merely 200 — a foreign process answers 200 too.
 
-The session itself runs with the advisor **forced on**: `advisor.enabled`
-defaults to false and only rpc/acp hosts inherit it, so the launcher passes
-`--advisor` rather than trusting a default. It also runs with extensions off,
-because an installed plugin was handing the trainer `bash` and `write` outside
-the tool allowlist entirely.
+## The trainer/executor line
 
-## The one mechanic
+`agents/trainer.md` carries `tools: [read]`, and `src/omp.ts` compiles that
+allowlist into the spawn, failing loud on anything it cannot parse. The boundary
+is **no write, no shell** — not "no filesystem", not "off the network": `read`
+reaches local files, directory trees, archives, SQLite rows, PDFs and URLs. What
+the trainer cannot do is write, edit, shell out, search or spawn a subagent, and
+`learn` is absent, so it cannot record. Verdicts are yours.
 
-**Commitment before disclosure.** If you read the framework before reasoning,
-you do recognition, not generation. Recognition feels exactly like possession and
-is worth almost nothing. So the trainer poses, demands your read, waits, and only
-then releases. It never praises: praise rewards matching the trainer's approval
-instead of reality, and produces the feeling of progress without the substance.
+`--tools=read` alone is not a boundary, and so was the first fix: an rpc
+`get_state` probe with `--tools=read` plus an overlay closing only omp's
+auto-include returned **103 tools, 99 of them state-mutating**, including
+`mcp__memory_wire_memory_retain`. Three leaks, each closed and each measured:
+extensions (`--no-extensions`), the user's own `~/.omp/agent/mcp.json`
+(`disabledProviders`), and the device-only `write` that `tools.xdev` allocates.
+The roster now measures as exactly `["read"]`, polled 14 times over 21 s so
+late-arriving MCP tools cannot hide. Sessions run with the advisor **forced on**
+(`advisor.enabled` defaults to false; only rpc/acp hosts inherit it) and extensions
+off, because an installed plugin was handing the trainer `bash` and `write`
+outside the allowlist entirely. `WATCHDOG.yml` holds exactly one advisor,
+`conscience`, at `@smol`: one call per turn, a critic and never a second trainer.
+
+## What can be falsified
+
+`palimpsest falsify` is deterministic string analysis over the trainer's own
+output, so passing means emitting the marker and a framework cannot be unsaid.
+`withhold` and `contradiction` have recorded baselines; `novelty` is **never
+auto-passable** — an instrument that grades itself is the failure this project
+exists to detect, and it called its own claim a re-presentation on first run. The
+advisor's negative test is **deferred, not passing** (`docs/advisor-gate-test.md`).
 
 ## Architecture
 
+`docs/architecture.md` is the real document — layers L0–L5, the tool-roster
+measurement, the residual risk, the cost model, and every gate with what fails it.
+
 ```
-bin/palimpsest      launcher
-config/locked-down.yml  --config overlay; makes tools:[read] actually binding
-                       (kills MCP, xd:// write transport, autolearn, denies exec)
-trainer/role.md     the contract — always resident
-trainer/digest.md   digestion protocol — read at runtime
-trainer/probe.md    discrimination probes — read at runtime
-trainer/falsify.md  audit protocols — appended under falsify
-src/atlas.ts        card index + primitive lattice
-src/omp.ts          the only place that spawns omp
-src/audit.ts        the falsifier
-src/assimilate.ts   the record
-src/record.ts       transcript-to-record parser, verdict hardwired PENDING
-src/session-read.ts latest-session transcript reader (JSONL, no omp import)
-src/memory.ts       memory-wire client — persistRecord by bank + verdict tags
-src/doctor.ts       eight subsystem checks, one PASS/FAIL line each
-src/trace.ts        tool-calling chronology, entry index on every line
-src/trajectory.ts   golden ordering vs an actual transcript
-state/              assimilation.log, committed
+bin/palimpsest + config/locked-down.yml   launcher; the overlay makes tools:[read] binding
+agents/trainer.md + trainer/role.md       the contract — declared, always resident
+WATCHDOG.yml                              one advisor, five checks, one a blocker
+src/omp.ts / src/atlas.ts                 the only omp spawn; card index + lattice
+src/memory.ts                             memory-wire client, the only HTTP in the repo
+src/doctor.ts / audit.ts / assimilate.ts  the 8 checks; the falsifier; the record
 ```
 
-The launcher is plumbing. **The trainer contract is the product.** omp's TUI is
-the interface; nothing here reimplements a chat UI.
+The launcher is plumbing; **the trainer contract is the product.**
 
-### Why `agents/trainer.md`
+## Proof
 
-The trainer/executor line is declared, not flagged. `agents/trainer.md` carries
-`tools: [read]` and `src/omp.ts` compiles it into the spawn, failing loud on
-anything it cannot parse — a silently-misread allowlist would hand the trainer
-a full toolset while the definition still reads like a boundary.
+```bash
+bun test        # 143 pass, 0 fail, 12 files
+```
 
-**The boundary is no write and no shell. It is not "no filesystem" and it is not
-"off the network."** `read` reaches a local file, a directory tree, an archive, a
-SQLite row, a PDF, and a **URL** — it dispatches to `fetch.ts` internally
-(`tools/read.ts:80`) — plus `ssh://` and internal `://` schemes. What the
-trainer cannot do is write, edit, shell out, search, or spawn a subagent: each of
-those is a separate tool and none is in the allowlist. "Trainer, not executor"
-is capability absence, not a request for restraint. `learn` is a write tool, so
-it is absent too: the trainer cannot record, and verdicts are structurally the
-user's.
+No dependencies, no `package.json` — Bun runs the TypeScript directly. The suite is
+not decoration: `tests/launcher.test.ts` asserts the overlay, `--no-extensions` and
+`--advisor` are on the built argv, so dropping any breaks the build instead of
+silently handing the trainer a write tool; `tests/trainer.contract.test.ts` pins
+the prohibitions in `role.md` and the atlas counts (801/191/256/354), so a drifted
+substrate fails rather than shrinking.
 
-**`--tools=read` alone is not enough, and so was the first fix.** omp auto-includes
-a write tool on an explicit list, so every spawn also passes
-`--config config/locked-down.yml` — and that was still not enough. An rpc
-`get_state` probe (zero model calls) with `--tools=read` plus that overlay
-returned **103 tools, 99 of them state-mutating**: `bash`, `write`, `edit`, and
-every `mcp__*` tool including `mcp__memory_wire_memory_retain`, so the trainer
-could record. Three more leaks, each closed and each measured:
+## Not built
 
-- an installed extension registered its own `bash`/`write`/`edit` outside the
-  allowlist entirely → `--no-extensions` (a flag; extension discovery is not a
-  config key)
-- the user's own `~/.omp/agent/mcp.json` loaded anyway → `disabledProviders` in
-  the overlay, since `mcp.enableProjectConfig` only covers the project half
-- `tools.xdev` allocated a device-only `write` for `write xd://<tool>` →
-  `tools.xdev: false`
-
-The roster now measures as exactly `["read"]`, polled 14 times over 21 s so
-late-arriving MCP tools cannot hide, with a `tools.approval` deny map behind it
-so a future auto-include still cannot execute. `docs/architecture.md` L1 owns
-the mechanism, the line numbers, and the residual risk — this is a proven
-mitigation, not the real gate, which is the SDK-only `restrictToolNames`.
-`tests/launcher.test.ts` asserts the overlay, `--no-extensions`, `--advisor`,
-and the overlay's load-bearing keys are on the built argv, so dropping any of
-them breaks the build rather than silently handing the trainer a write tool.
-
-## The falsifier
-
-This project can be killed. `palimpsest falsify` is the instrument that does it,
-and the checks are deterministic string analysis over the trainer's own output,
-so a trainer that wants to pass has to emit the marker and a framework name
-cannot be unsaid.
-
-| Check | Question | Baseline (2026-09-30) |
-|---|---|---|
-| `withhold` | Does it demand a read before naming a framework? | PASS — demanded commitment, named nothing |
-| `contradiction` | Does it manufacture contradictions on settled material? | PASS — 0 found |
-| `novelty` | Is the claim new, or a re-presentation? | **needs your grade** |
-
-`novelty` is deliberately not auto-passable. An instrument that grades itself is
-the failure mode this project exists to detect. It reported its own claim as a
-**re-presentation** on first run, which is the correct kind of bad news.
-
-`tests/trainer.contract.test.ts` asserts the contract still has its teeth —
-delete "Never praise" from `role.md` and the build breaks. A gate that cannot
-fail is decoration.
-
-### `bench` — the phase-1 instrument test
-
-`palimpsest bench <dir>` runs one digestion per `.md` file and reports only what
-can be judged **without** the user: convergence rate, claim sprawl, contact-surface
-width, cluster spread, contradiction counts, and any pathologies (`NO-CLAIM`,
-`SPRAWL`, `THIN`, `SINGLE-FAMILY`). It then prints every claim for you to grade.
-
-It computes **no novelty verdict on purpose** — an instrument that grades itself is
-the failure this project exists to catch. It also does not write to
-`state/assimilation.log`: a machine-run digest is an instrument run, not an
-assimilation, and mixing the two would corrupt the record.
-
-A known limit worth stating precisely: `bench` and `digest` run one-shot, so there
-is no user turn between demanding a read and releasing a framework. The
-load-bearing direction **is** covered — the only leak point is turn 1, where no
-user reasoning exists yet, and `falsify withhold` probes exactly that.
-
-What stays untested is the *baited* case: a user who pushes back ("just tell me
-the answer") and whether the trainer holds the line. That needs a real multi-turn
-exchange, which means `omp --mode=rpc` (see `docs/omp-notes.md`). Until then the
-withhold property is verified for the first turn and assumed for the rest.
-
-## Substrate note
-
-The atlas is **read-only** from this repo. It is developed and audited on its own
-terms; `palimpsest` consumes it. `docs/architecture.md` L0 records what its shape
-forces on the indexer — heading level is inconsistent, so the indexer anchors on
-`**Tier:**` and is asserted against the atlas's own counts (801 / 191 / 256 / 354),
-so a drift breaks the test rather than silently shrinking the substrate. Every
-card declares its own `**Primitives:**`, which is what makes the lattice a real
-graph rather than a metaphor.
-
-## Not built yet
-
-Phase numbers below are `docs/plan.md`'s, which owns the ledger.
-
-- **Phase 4 — verify it compounds.** Run sessions over time and check whether any
-  claim appears in *no single session transcript*. Nothing automated: grading a
-  synthesis claim is the same job as grading a novelty claim.
-- **Phase 5 — write-back.** Assimilation currently records; it does not mutate
-  the atlas. Growth becomes compounding when a digestion can add an edge or mint
-  a card, gated by `registry.py --check`. Gated on Phase 4 passing.
-- **Always-on.** Catalyst still has to be handed over. `omp --mode=rpc`
-  (newline-delimited JSON over stdio, documented, verified) plus
-  `set_host_tools` is the route: host-owned tools with no extension code at all.
-- **Model selection.** The launcher passes flags through; a config overlay with
-  `modelRoles` is the next step.
-- **616 of 801 cards have no `### Digest` field.** Only tier-1 is wired, which is
-  all the lattice needs to propagate.
+Ordered, with owners, in `docs/remaining.md`. Short version: nobody has run a real
+session yet, so every loop-level guarantee is fixture-tested and none is
+user-tested. Then synthesis over time (Phase 4), write-back into the atlas (Phase
+5, gated on 4), 616 of 801 cards with no `### Digest` field, 2–5 minutes per model
+call with the advisor doubling it.
