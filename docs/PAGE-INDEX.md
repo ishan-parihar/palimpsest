@@ -16,5 +16,5 @@ Status: LIVE (current truth) · EVIDENCE (dated measured verdict) · PLAN-ACTIVE
 | [`CLOSED.md`](kb/CLOSED.md) | LEDGER | What was tried and rejected — do not re-litigate? | — |
 | [`WORKLOG.md`](kb/WORKLOG.md) | LEDGER | What happened, session by session? | — |
 | [`feed.md`](kb/feed.md) | LEDGER | Cross-agent messages, claims, mentions? | — |
-| [`2026-09-30-PURGE.md`](audit/2026-09-30-PURGE.md) | Purge report — An audit of palimpsest for over-engineering and redundancy, and what was | Purge report — An audit of palimpsest for over-engineering and redundancy, and what was removed. Final: bun test 10… | — |
+| [`2026-09-30-PURGE.md`](audit/2026-09-30-PURGE.md) | EVIDENCE | Purge report — An audit of palimpsest for over-engineering and redundancy, and what was removed. Final: bun test 10… | — |
 | [`RECORDS.md`](RECORDS.md) | LIVE | Records — decisions (AD) and regressions (RG) — Generated zones below are written by genome rec emit; never hand-edit them. Topic → governing record… | — |
