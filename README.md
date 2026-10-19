@@ -158,6 +158,10 @@ src/doctor.ts / audit.ts / assimilate.ts  the 8 checks; the falsifier; the recor
 
 The launcher is plumbing; **the trainer contract is the product.**
 
+## Documentation
+
+Every doc in `docs/` is listed with the question it answers in [docs/PAGE-INDEX.md](docs/PAGE-INDEX.md).
+
 ## Proof
 
 ```bash
