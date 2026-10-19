@@ -38,7 +38,7 @@ exits nonzero. Linux `x86_64` or `aarch64` only.
 | Flag | Default | What it does |
 |---|---|---|
 | `--install-dir <path>` | `~/.local/share/palimpsest` | where the repo is cloned |
-| `--repo-url <url\|path>` | `https://github.com/ishan-parihar/palimpsest` | clone source, resolved before use |
+| `--repo-url <url\ | path>` | `https://github.com/ishan-parihar/palimpsest` |  |
 | `--atlas-dir <path>` | `~/.agents/skills/mental-model-atlas` | atlas location |
 | `--atlas-repo <url>` | *(unset, deliberately)* | clone the atlas when the dir is empty |
 | `--memory-port <n>` | `0` | `0` asks the OS for a free port |
