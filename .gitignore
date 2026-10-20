@@ -4,3 +4,8 @@ dist/
 .omp-profile/
 /sessions/
 *.tmp
+
+# genome runtime state (locks, temp files, recon tokens, read marks)
+*.genome-lock
+*.genome-tmp
+.genome/
