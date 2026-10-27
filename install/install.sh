@@ -130,6 +130,18 @@ resolve_source() {
 MISE_SHIMS="${MISE_DATA_DIR:-$HOME/.local/share/mise}/shims"
 export PATH="$BIN_DIR:$MISE_SHIMS:$PATH"
 
+ensure_path() {  # idempotent: grep before append
+  local dir="$1" rc="$HOME/.bashrc"
+  case ":$PATH:" in *":$dir:"*) return 0 ;; esac
+  if [ -f "$HOME/.zshrc" ] || [ -n "${ZSH_VERSION:-}" ]; then rc="$HOME/.zshrc"; fi
+  if ! grep -qs "export PATH=\"$dir:\$PATH\"" "$rc"; then
+    printf '\n# added by palimpsest installer\nexport PATH="%s:$PATH"\n' "$dir" >> "$rc"
+    printf '>>> generated: %s (PATH export) <<<\n' "$rc"
+  fi
+}
+ensure_path "$BIN_DIR"
+ensure_path "$MISE_SHIMS"
+
 # ============================================================== 1. OS gate ===
 step "1/8  platform"
 OS=$(uname -s)
@@ -367,6 +379,9 @@ if [ "$WITH_DAEMON" -eq 1 ]; then
     health_ok || die "memory-wire on $ADDR did not return exactly 'ok' on /health. A 200 from some other process does not count, which is why this is a body comparison and not a status-code check."
     ok "serving, /health returns exactly ok"
   fi
+  if [ -f "$INSTALL_DIR/memory.env" ] && grep -qs "PALIMPSEST_MEMORY_PORT=$MEMORY_PORT" "$INSTALL_DIR/memory.env"; then
+    info "$MEMENV already records port $MEMORY_PORT and db $MEMORY_DB"
+  else
   mkdir -p "$INSTALL_DIR"
   cat >"$MEMENV" <<EOF
 # Written by install/install.sh. Source it, or export these yourself.
@@ -380,6 +395,7 @@ export PATH="$BIN_DIR:$MISE_SHIMS:\$PATH"
 # stop this install's memory-wire: $STOP_HINT
 EOF
   ok "recorded in $MEMENV"
+  fi
 else
   ADDR=127.0.0.1:0
 fi
@@ -430,3 +446,16 @@ cat <<EOF
   memory-wire: http://$ADDR  db $MEMORY_DB
   stop it:    $STOP_HINT
 EOF
+
+print_cta() {
+  [ "${SKIP_CTA:-0}" = "1" ] && return 0
+  printf '\n%s\n' "──────────────────────────────────────────────────────"
+  printf ' ⭐  Found palimpsest useful? Star it:  https://github.com/ishan-parihar/palimpsest\n'
+  printf ' 💜  Support development:\n'
+  printf '     GitHub Sponsors : https://github.com/sponsors/ishan-parihar\n'
+  printf '     Razorpay (UPI)  : https://rzp.io/rzp/ishan-parihar\n'
+  printf '%s\n' "──────────────────────────────────────────────────────"
+}
+SKIP_CTA="${SKIP_CTA:-0}"
+case "${1:-}" in --no-cta) SKIP_CTA=1 ;; esac
+print_cta
